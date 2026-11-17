@@ -1,0 +1,11 @@
+{
+  "name": "Twogether",
+  "description": "Next-Gen Glassmorphic Social & Dating App featuring AI Biometric Verification, Real-Time VR Lounge, and Shared Beats Music Sync.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

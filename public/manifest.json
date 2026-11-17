@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "Twogether — Social & Soulmate App",
+  "short_name": "Twogether",
+  "description": "Next-Gen Glassmorphic Social & Dating App with 18+ AI Verification, Anti-Nudity Safety, and Shared Beats.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0F0E17",
+  "theme_color": "#0F0E17",
+  "categories": ["social", "entertainment", "lifestyle"],
+  "icons": [
+    {
+      "src": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=192&q=80",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=512&q=80",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}
