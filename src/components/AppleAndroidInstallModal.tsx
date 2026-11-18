@@ -86,11 +86,12 @@ export const AppleAndroidInstallModal: React.FC<AppleAndroidInstallModalProps> =
 
         {/* Header */}
         <div className="flex items-center gap-3 mb-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-400 via-purple-500 to-pink-500 p-0.5 flex items-center justify-center shadow-lg">
-            <div className="w-full h-full bg-[#141221] rounded-[14px] flex items-center justify-center">
-              <Smartphone className="w-6 h-6 text-cyan-400" />
-            </div>
-          </div>
+          <img
+            src="/pwa-192x192.png"
+            alt="Twogether App Icon"
+            referrerPolicy="no-referrer"
+            className="w-12 h-12 rounded-2xl shadow-lg border border-white/20 object-cover shrink-0"
+          />
           <div>
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-mono font-bold text-cyan-300 uppercase tracking-wider">

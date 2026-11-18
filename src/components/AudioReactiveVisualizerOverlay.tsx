@@ -29,6 +29,7 @@ export const AudioReactiveVisualizerOverlay: React.FC<AudioReactiveVisualizerOve
   // Setup Web Audio Analyser if audioElement is provided
   useEffect(() => {
     if (!audioElement) return;
+    let ctx: AudioContext | null = null;
 
     try {
       const AudioCtxClass =
@@ -37,7 +38,7 @@ export const AudioReactiveVisualizerOverlay: React.FC<AudioReactiveVisualizerOve
       if (!AudioCtxClass) return;
 
       // Note: We avoid reconnecting if already connected to prevent errors
-      const ctx = new AudioCtxClass();
+      ctx = new AudioCtxClass();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 128;
       const bufferLength = analyser.frequencyBinCount;
@@ -56,6 +57,14 @@ export const AudioReactiveVisualizerOverlay: React.FC<AudioReactiveVisualizerOve
     } catch {
       // ignore
     }
+
+    return () => {
+      analyserRef.current = null;
+      dataArrayRef.current = null;
+      if (ctx && ctx.state !== 'closed') {
+        ctx.close().catch(() => {});
+      }
+    };
   }, [audioElement]);
 
   useEffect(() => {

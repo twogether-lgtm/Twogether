@@ -2,24 +2,64 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>Twogether — Next-Gen Social & Dating App</title>
-    <meta name="description" content="Next-Gen Glassmorphic Social & Dating App featuring AI Biometric Verification, Real-Time VR Lounge, and Shared Beats Music Sync." />
-    <meta property="og:title" content="Twogether — Next-Gen Social & Dating App" />
-    <meta property="og:description" content="Next-Gen Glassmorphic Social & Dating App featuring AI Biometric Verification, Real-Time VR Lounge, and Shared Beats Music Sync." />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Twogether — Social, Dating &amp; Shared Beats App</title>
+    <meta
+      name="description"
+      content="Next-Gen Glassmorphic Social, Couples Arcade &amp; Dating App featuring AI 18+ Verification, Real-Time VR Lounge, and Shared Beats Music Sync."
+    />
+
+    <!-- Website Search & Social OpenGraph Metadata -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Twogether" />
+    <meta property="og:title" content="Twogether — Social, Dating &amp; Shared Beats App" />
+    <meta
+      property="og:description"
+      content="Next-Gen Glassmorphic Social, Couples Arcade &amp; Dating App featuring AI 18+ Verification, Real-Time VR Lounge, and Shared Beats Music Sync."
+    />
+    <meta property="og:image" content="/og-icon.png" />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta property="og:image:alt" content="Twogether App Icon" />
+
+    <!-- Twitter / X Search Card -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Twogether — Social, Dating &amp; Shared Beats App" />
+    <meta
+      name="twitter:description"
+      content="Next-Gen Glassmorphic Social, Couples Arcade &amp; Dating App featuring AI 18+ Verification, Real-Time VR Lounge, and Shared Beats Music Sync."
+    />
+    <meta name="twitter:image" content="/og-icon.png" />
+
+    <!-- Browser Tab, Website Search & Mobile App Icons -->
     <meta name="theme-color" content="#0F0E17" />
-    <!-- Apple & Android Web App Compliance -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Twogether" />
     <meta name="mobile-web-app-capable" content="yes" />
     <link rel="manifest" href="/manifest.json" />
-    <link rel="apple-touch-icon" href="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=192&q=80" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+    <!-- Schema.org Structured Data for Website & App Search -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Twogether",
+        "applicationCategory": "SocialNetworkingApplication",
+        "operatingSystem": "Android, iOS, Web",
+        "description": "Next-Gen Glassmorphic Social, Couples Arcade & Dating App featuring AI 18+ Verification, Real-Time VR Lounge, and Shared Beats Music Sync.",
+        "image": "/og-icon.png",
+        "logo": "/pwa-512x512.png"
+      }
+    </script>
   </head>
   <body class="bg-[#0F0E17] text-white overflow-x-hidden">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

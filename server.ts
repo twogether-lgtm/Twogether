@@ -2228,6 +2228,7 @@ const profiles = [
     matchScore: 98,
     isSoulVerified: true,
     tier: 'vip', // Gold Tick Badge
+    badges: ['jam_legend', 'vr_lounger', 'vip_luminary', 'verified_soul'],
     soulmateAim: 'Find a genuine partner to co-create ambient music, attend live VR concerts, and build a meaningful long-term connection on Twogether.',
     workArea: 'Lead Cyberpunk Architect & Interactive Sound Designer',
     hobbies: ['3D Synthesizers', 'Lofi Vinyl', 'Stargazing', 'Coffee Roasting', 'Generative Art'],
@@ -2271,6 +2272,7 @@ const profiles = [
     matchScore: 94,
     isSoulVerified: true,
     tier: 'basic', // Blue Tick Badge
+    badges: ['jam_legend', 'arcade_ace', 'verified_soul'],
     soulmateAim: 'Meet an inspiring, creative partner to exchange ideas, share daily beats, and travel the world.',
     workArea: 'Spatial Audio Engineer at SoundVerse Studios',
     hobbies: ['Modular Synthesizers', 'Bouldering', 'Pour-Over Coffee', 'Indie Games'],
@@ -2309,6 +2311,7 @@ const profiles = [
     matchScore: 96,
     isSoulVerified: true,
     tier: 'vip', // Gold Tick Badge
+    badges: ['vr_lounger', 'reel_creator', 'vip_luminary', 'verified_soul'],
     soulmateAim: 'Looking for a thoughtful soulmate for deep late-night conversations, concert dates, and lifelong partnership.',
     workArea: 'AI Research Scientist in Generative Media',
     hobbies: ['Holographic Art', 'Acoustic Guitar', 'Philosophy', 'Film Photography'],
@@ -3683,8 +3686,8 @@ let paymentTransactions: PaymentTxRecord[] = [
   {
     id: 'tx_gpay_1001',
     userEmail: 'aria.sterling@twogether.app',
-    planName: 'VIP Yearly Subscription ($39.99)',
-    amount: 39.99,
+    planName: 'VIP Yearly Subscription ($99.50)',
+    amount: 99.5,
     currency: 'USD',
     paymentMethod: 'Google Pay (In-App Billing)',
     googleTransactionId: 'GPA.3301-9481-2291-00012',
@@ -3694,8 +3697,8 @@ let paymentTransactions: PaymentTxRecord[] = [
   {
     id: 'tx_gpay_1002',
     userEmail: 'maya.lin@twogether.app',
-    planName: 'VIP 2-Weeks Subscription ($4.99)',
-    amount: 4.99,
+    planName: 'VIP 14-Day Bi-Weekly Subscription ($7.00)',
+    amount: 7.0,
     currency: 'USD',
     paymentMethod: 'Google Play Subscription API',
     googleTransactionId: 'GPA.3301-9481-2291-00013',
@@ -3705,8 +3708,8 @@ let paymentTransactions: PaymentTxRecord[] = [
   {
     id: 'tx_gpay_1003',
     userEmail: 'zephyrine.chen@twogether.app',
-    planName: 'VIP Monthly Subscription ($9.99)',
-    amount: 9.99,
+    planName: 'VIP 30-Day Monthly Subscription ($14.50)',
+    amount: 14.5,
     currency: 'USD',
     paymentMethod: 'Google Pay (In-App Billing)',
     googleTransactionId: 'GPA.3301-9481-2291-00014',
@@ -3770,7 +3773,7 @@ app.post('/api/admin/payouts/update', requireOwnerAuth, (req, res) => {
 
 // Process User Payment & Credit Admin Ledger Endpoint (Google Pay Only)
 app.post('/api/billing/process-payment', (req, res) => {
-  const { userEmail = 'dylanwisney@gmail.com', planName = 'VIP 30-Day Monthly Subscription ($5.99)', amount = 5.99, currency = 'USD' } = req.body;
+  const { userEmail = 'dylanwisney@gmail.com', planName = 'VIP 30-Day Monthly Subscription ($14.50)', amount = 14.5, currency = 'USD' } = req.body;
 
   const newTx: PaymentTxRecord = {
     id: `tx_gpay_${Date.now().toString().slice(-6)}`,
@@ -3801,8 +3804,8 @@ app.post('/api/billing/webhook', (req, res) => {
     const newTx: PaymentTxRecord = {
       id: `wh_${Date.now().toString().slice(-6)}`,
       userEmail: 'rtdn_subscriber@twogether.app',
-      planName: 'VIP Auto-Renewal ($4.99)',
-      amount: 4.99,
+      planName: 'VIP Auto-Renewal ($14.50)',
+      amount: 14.5,
       currency: 'USD',
       paymentMethod: 'Google Play RTDN Pub/Sub',
       googleTransactionId: event.subscriptionNotification.purchaseToken || `GPA.RTDN-${Date.now()}`,
@@ -4674,7 +4677,12 @@ io.on('connection', (socket) => {
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true as const,
+        hmr: process.env.DISABLE_HMR !== 'true',
+        watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

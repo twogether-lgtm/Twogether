@@ -32,8 +32,10 @@ class LoveSongAudioService {
       });
 
       this.audio.addEventListener('error', () => {
-        // Fallback to warm Web Audio acoustic love synth if audio URL encounters network/CORS issues
-        this.startLoveSongSynth();
+        // Fallback to warm Web Audio acoustic love synth only if playback was actively requested
+        if (this.isPlaying) {
+          this.startLoveSongSynth();
+        }
       });
     }
   }

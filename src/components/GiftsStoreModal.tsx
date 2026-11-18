@@ -996,7 +996,7 @@ export const GiftsStoreModal: React.FC<GiftsStoreModalProps> = ({
                   Earn Determination Points Daily
                 </span>
                 <p className="text-[11px] leading-relaxed text-zinc-300">
-                  Earn points daily through genuine effort: daily check-ins (2.5 Pts/day), answering reflection questions, and spin wheel. Convert 25 points into 1 gift!
+                  Earn points daily through genuine effort: daily check-ins (2.5 Pts/day) and answering reflection questions. Convert 25 points into 1 gift!
                 </p>
               </div>
             </div>

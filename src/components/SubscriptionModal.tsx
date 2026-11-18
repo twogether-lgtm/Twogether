@@ -19,6 +19,8 @@ import {
   ChevronDown,
   ChevronUp,
   Lock,
+  Gamepad2,
+  Layers,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
@@ -29,7 +31,19 @@ import {
   GooglePayButton,
   GooglePayCheckoutSheet,
 } from './GooglePayComponents';
-import { ActiveSubscriptionRecord } from '../types';
+import {
+  ActiveSubscriptionRecord,
+  ArcadeGameId,
+  GamePlanDurationId,
+  GameUnlockEntry,
+} from '../types';
+import {
+  ARCADE_GAME_CATALOG,
+  GAME_DURATION_OPTIONS,
+  calculateArcadeCheckout,
+  loadActiveUnlockedGamesMap,
+  saveUnlockedGamesMap,
+} from '../data/subscriptionData';
 import { appSoundService } from '../services/appSoundService';
 
 interface SubscriptionModalProps {
@@ -38,6 +52,10 @@ interface SubscriptionModalProps {
   isVip: boolean;
   activeSubscription?: ActiveSubscriptionRecord | null;
   onSubscriptionApproved?: (sub: ActiveSubscriptionRecord) => void;
+  unlockedGamesMap?: Partial<Record<ArcadeGameId, GameUnlockEntry>>;
+  preselectedGameIds?: ArcadeGameId[];
+  initialGameDuration?: GamePlanDurationId;
+  onGamesUnlocked?: (entries: GameUnlockEntry[], isAllBundle: boolean) => void;
   onUpgradeToVip?: () => void;
   onToggleVip?: (status: boolean) => void;
   onDowngradeToBasic?: () => void;
@@ -68,6 +86,9 @@ interface DirectApprovalRecord {
   approvalId: string;
   txId: string;
   approvalTimestamp: string;
+  isPartialGamesPurchase?: boolean;
+  unlockedGameTitles?: string[];
+  durationLabel?: string;
 }
 
 export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
@@ -76,6 +97,10 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
   isVip,
   activeSubscription,
   onSubscriptionApproved,
+  unlockedGamesMap = {},
+  preselectedGameIds = [],
+  initialGameDuration,
+  onGamesUnlocked,
   onUpgradeToVip,
   onToggleVip,
   onDowngradeToBasic,
@@ -83,6 +108,15 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
   reasonMessage,
   onOpenReferral,
 }) => {
+  const [checkoutTab, setCheckoutTab] = useState<'games' | 'vip'>(() =>
+    preselectedGameIds.length > 0 ? 'games' : 'vip'
+  );
+  const [selectedDuration, setSelectedDuration] = useState<GamePlanDurationId>(
+    initialGameDuration || 'daily'
+  );
+  const [selectedGameIds, setSelectedGameIds] = useState<ArcadeGameId[]>(() => preselectedGameIds);
+  const [purchaseAllBundleFlag, setPurchaseAllBundleFlag] = useState<boolean>(false);
+
   const [billingCycle, setBillingCycle] = useState<BillingCycle>('monthly');
   const [selectedCurrency, setSelectedCurrency] = useState<SupportedCurrency>('USD');
   const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
@@ -91,6 +125,37 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
   const [showComparisonTable, setShowComparisonTable] = useState<boolean>(false);
   const [isGooglePaySheetOpen, setIsGooglePaySheetOpen] = useState<boolean>(false);
   const [pendingPlanToPurchase, setPendingPlanToPurchase] = useState<BillingCycle | null>(null);
+  const [pendingGamesOrder, setPendingGamesOrder] = useState<{
+    gameIds: ArcadeGameId[];
+    forceAll: boolean;
+    durationId: GamePlanDurationId;
+  } | null>(null);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+    setDirectApproval(null);
+    setPendingGamesOrder(null);
+    setPurchaseAllBundleFlag(false);
+    if (initialGameDuration) {
+      setSelectedDuration(initialGameDuration);
+    }
+    if (preselectedGameIds && preselectedGameIds.length > 0) {
+      setCheckoutTab('games');
+      if (preselectedGameIds.length >= ARCADE_GAME_CATALOG.length) {
+        setSelectedGameIds(ARCADE_GAME_CATALOG.map((g) => g.id));
+        setPurchaseAllBundleFlag(true);
+      } else {
+        const now = Date.now();
+        const filteredLocked = preselectedGameIds.filter((id) => {
+          const existing = unlockedGamesMap[id];
+          return !existing || existing.expiresAtMs <= now;
+        });
+        setSelectedGameIds(filteredLocked.length > 0 ? filteredLocked : preselectedGameIds);
+      }
+    } else {
+      setSelectedGameIds([]);
+    }
+  }, [isOpen, preselectedGameIds, initialGameDuration]);
 
   if (!isOpen) return null;
 
@@ -143,38 +208,38 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
     }
   };
 
-  // Strictly ordered ascending pricing: 0.99 < 2.49 < 3.99 < 5.99 < 29.99
+  // Strictly ordered ascending pricing: 1.00 < 3.50 < 7.00 < 14.50 < 99.50
   const getPlanPrice = (cycle: BillingCycle): number => {
     switch (cycle) {
       case 'daily':
-        return 0.99;
+        return 1.0;
       case 'weekly':
-        return 2.49;
+        return 3.5;
       case 'two_weeks':
-        return 3.99;
+        return 7.0;
       case 'ad_free_monthly':
         return 3.89;
       case 'monthly':
-        return 5.99;
+        return 14.5;
       case 'yearly':
-        return 29.99;
+        return 99.5;
     }
   };
 
   const getPlanNameByCycle = (cycle: BillingCycle): string => {
     switch (cycle) {
       case 'daily':
-        return 'VIP 1-Day Momentum Pass ($0.99)';
+        return 'VIP 1-Day Momentum Pass ($1.00)';
       case 'weekly':
-        return 'VIP 7-Day Weekly Pass ($2.49)';
+        return 'VIP 7-Day Weekly Pass ($3.50)';
       case 'two_weeks':
-        return 'VIP 2-Weeks Bi-Weekly Pass ($3.99)';
+        return 'VIP 14-Day Bi-Weekly Pass ($7.00)';
       case 'ad_free_monthly':
-        return 'Ad-Free 5-Min Escape & Continuous Love Music Pass ($3.89/mo)';
+        return 'Escape Pop-Up Ads & Continuous Love Music Pass ($3.89/mo)';
       case 'monthly':
-        return 'VIP 30-Day Monthly Subscription ($5.99)';
+        return 'VIP 30-Day Monthly Subscription ($14.50)';
       case 'yearly':
-        return 'VIP 1-Year Unlimited Annual Pass ($29.99)';
+        return 'VIP 1-Year Unlimited Annual Pass ($99.50)';
     }
   };
 
@@ -191,19 +256,76 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
   const currentUsdAmount = getPlanPrice(billingCycle);
   const currentConvertedAmount = formatCurrency(currentUsdAmount);
 
-  // Trigger Google Pay Checkout Sheet
+  const activeGamesQuote = calculateArcadeCheckout(
+    selectedGameIds,
+    selectedDuration,
+    purchaseAllBundleFlag
+  );
+
+  // Trigger Google Pay Checkout Sheet for Full VIP Plan
   const handleOpenGooglePay = (targetCycle?: BillingCycle) => {
     const cycle = targetCycle || billingCycle;
     setBillingCycle(cycle);
+    setPendingGamesOrder(null);
     setPendingPlanToPurchase(cycle);
+    setIsGooglePaySheetOpen(true);
+  };
+
+  // Trigger Google Pay Checkout Sheet for One Game, Summed Games, or All-8 Bundle
+  const handleOpenGamesGooglePay = (forceAllBundle: boolean) => {
+    const targetIds = forceAllBundle
+      ? ARCADE_GAME_CATALOG.map((g) => g.id)
+      : selectedGameIds;
+    if (!forceAllBundle && targetIds.length === 0) return;
+    setPurchaseAllBundleFlag(forceAllBundle);
+    setPendingPlanToPurchase(null);
+    setPendingGamesOrder({
+      gameIds: targetIds,
+      forceAll: forceAllBundle,
+      durationId: selectedDuration,
+    });
     setIsGooglePaySheetOpen(true);
   };
 
   // Confirm Google Pay Authorization and Process
   const handleConfirmGooglePay = () => {
-    const targetCycle = pendingPlanToPurchase || billingCycle;
     setIsGooglePaySheetOpen(false);
     setIsProcessingPayment(true);
+
+    if (pendingGamesOrder) {
+      const quote = calculateArcadeCheckout(
+        pendingGamesOrder.gameIds,
+        pendingGamesOrder.durationId,
+        pendingGamesOrder.forceAll
+      );
+      const planName = quote.summaryTitle;
+      const amount = quote.finalUsd;
+
+      fetch('/api/billing/process-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userEmail: 'dylanwisney@gmail.com',
+          planName,
+          amount,
+          currency: 'USD',
+          localCurrencyEquivalent: `${formatCurrency(amount)} ${selectedCurrency}`,
+          paymentMethod: 'Google Pay (Google Play In-App Billing)',
+        }),
+      })
+        .then((res) => res.json())
+        .then(() => {
+          completeGamesApproval(quote);
+        })
+        .catch((err) => {
+          console.error('Google Pay billing error:', err);
+          completeGamesApproval(quote);
+        })
+        .finally(() => setIsProcessingPayment(false));
+      return;
+    }
+
+    const targetCycle = pendingPlanToPurchase || billingCycle;
     const amount = getPlanPrice(targetCycle);
     const planName = getPlanNameByCycle(targetCycle);
 
@@ -228,6 +350,83 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
         completeDirectApproval(planName, amount, targetCycle);
       })
       .finally(() => setIsProcessingPayment(false));
+  };
+
+  const completeGamesApproval = (quote: ReturnType<typeof calculateArcadeCheckout>) => {
+    const randomApprovalNum = Math.floor(100000 + Math.random() * 900000);
+    const orderNum1 = Math.floor(1000 + Math.random() * 9000);
+    const orderNum2 = Math.floor(1000 + Math.random() * 9000);
+    const googleOrderId = `GPA.3392-${orderNum1}-${orderNum2}`;
+    const approvalCode = `TWG-GAME-GPAY-${randomApprovalNum}`;
+    const expiresAtMs = Date.now() + quote.duration.durationMs;
+    const nowTimestamp = new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    const nowIso = new Date().toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    const newEntries: GameUnlockEntry[] = quote.effectiveUnlockedIds.map((gameId) => ({
+      gameId,
+      planId: quote.duration.id,
+      planName: quote.summaryTitle,
+      durationLabel: quote.duration.label,
+      usdAmount: quote.finalUsd,
+      expiresAtMs,
+      googleOrderId,
+      unlockedAt: nowIso,
+    }));
+
+    // Merge cleanly with any previously unlocked games so user can pay one game after another
+    try {
+      const existing = loadActiveUnlockedGamesMap();
+      const merged: Partial<Record<ArcadeGameId, GameUnlockEntry>> = { ...existing };
+      for (const entry of newEntries) {
+        const cur = merged[entry.gameId];
+        if (!cur || entry.expiresAtMs >= cur.expiresAtMs) {
+          merged[entry.gameId] = entry;
+        }
+      }
+      saveUnlockedGamesMap(merged);
+    } catch {}
+
+    if (onGamesUnlocked) {
+      onGamesUnlocked(newEntries, quote.isAllGamesBundle);
+    }
+
+    const titles = quote.effectiveUnlockedIds.map(
+      (id) => ARCADE_GAME_CATALOG.find((g) => g.id === id)?.title || id
+    );
+
+    setCreatedSubscription(null);
+    setDirectApproval({
+      planName: quote.summaryTitle,
+      amount: quote.finalUsd,
+      currency: selectedCurrency,
+      convertedAmount: formatCurrency(quote.finalUsd),
+      approvalId: approvalCode,
+      txId: googleOrderId,
+      approvalTimestamp: nowTimestamp,
+      isPartialGamesPurchase: true,
+      unlockedGameTitles: titles,
+      durationLabel: quote.duration.label,
+    });
+    setSelectedGameIds([]);
+    setPendingGamesOrder(null);
+    playCelebrationChime();
+
+    try {
+      confetti({
+        particleCount: 90,
+        spread: 80,
+        origin: { y: 0.5 },
+        colors: ['#4285F4', '#34A853', '#FBBC05', '#ec4899', '#06b6d4'],
+      });
+    } catch {}
   };
 
   const completeDirectApproval = (planName: string, amount: number, cycle: BillingCycle) => {
@@ -305,11 +504,13 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
 
   // Launch and enter app 100% ready to use after Google Pay approval
   const handleLaunchReadyApp = () => {
-    if (createdSubscription && onSubscriptionApproved) {
-      onSubscriptionApproved(createdSubscription);
+    if (!directApproval?.isPartialGamesPurchase) {
+      if (createdSubscription && onSubscriptionApproved) {
+        onSubscriptionApproved(createdSubscription);
+      }
+      if (onToggleVip) onToggleVip(true);
+      if (onUpgradeToVip) onUpgradeToVip();
     }
-    if (onToggleVip) onToggleVip(true);
-    if (onUpgradeToVip) onUpgradeToVip();
     setDirectApproval(null);
     onClose();
   };
@@ -347,10 +548,21 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                 GOOGLE PAY PAYMENT CONFIRMED
               </div>
               <h2 className="text-2xl sm:text-3xl font-black text-white">
-                Payment Completed with Google Pay!
+                {directApproval.isPartialGamesPurchase
+                  ? 'Games Unlocked with Google Pay!'
+                  : 'Payment Completed with Google Pay!'}
               </h2>
               <p className="text-xs sm:text-sm text-zinc-300 max-w-md mx-auto mt-1">
-                Your account is now <strong className="text-amber-300 font-bold">100% Instantly Auto-Verified</strong> and VIP unlocked. Enjoy unlimited messaging, calls, 3D VR music lounges, and reels!
+                {directApproval.isPartialGamesPurchase ? (
+                  <>
+                    Your selected game access is <strong className="text-emerald-300 font-bold">Active Immediately</strong> for{' '}
+                    <strong className="text-amber-300">{directApproval.durationLabel}</strong>. You can unlock more games anytime one after the other or bundle all 8!
+                  </>
+                ) : (
+                  <>
+                    Your account is now <strong className="text-amber-300 font-bold">100% Instantly Auto-Verified</strong> and VIP unlocked. Enjoy unlimited messaging, calls, 3D VR music lounges, and reels!
+                  </>
+                )}
               </p>
             </div>
 
@@ -375,7 +587,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                 <div>
                   <span className="text-zinc-500 block text-[10px]">CONFIRMED PLAN:</span>
                   <span className="text-cyan-300 font-bold">
-                    {directApproval.convertedAmount} ({directApproval.planName.split('(')[0].trim()})
+                    {directApproval.convertedAmount} ({directApproval.planName})
                   </span>
                 </div>
                 <div>
@@ -389,37 +601,51 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
               </div>
             </div>
 
-            {/* Privileges Unlocked Checklist */}
+            {/* Privileges / Unlocked Games Checklist */}
             <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-left">
               <span className="text-xs font-bold text-white uppercase tracking-wider block mb-2 font-mono flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" /> All Perks Fully Unlocked & Ready:
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />{' '}
+                {directApproval.isPartialGamesPurchase
+                  ? `Unlocked Games Active (${directApproval.durationLabel}):`
+                  : 'All Perks Fully Unlocked & Ready:'}
               </span>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-zinc-200">
-                <div className="flex items-center gap-2 text-amber-200">
-                  <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                  <span>UNLIMITED Direct Chats & DMs (Zero limits)</span>
+              {directApproval.isPartialGamesPurchase && directApproval.unlockedGameTitles ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-zinc-200">
+                  {directApproval.unlockedGameTitles.map((title) => (
+                    <div key={title} className="flex items-center gap-2 text-emerald-200">
+                      <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                      <span>{title}</span>
+                    </div>
+                  ))}
                 </div>
-                <div className="flex items-center gap-2 text-amber-200">
-                  <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                  <span>UNLIMITED HD Voice & Video Calls</span>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-zinc-200">
+                  <div className="flex items-center gap-2 text-amber-200">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                    <span>UNLIMITED Direct Chats & DMs (Zero limits)</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-amber-200">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                    <span>UNLIMITED HD Voice & Video Calls</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-amber-200">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                    <span>UNLIMITED Posts, Stories & Reels</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-amber-200">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                    <span>VIP Gold Crown & Verified Badge Active</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-amber-200">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                    <span>All 8+ 4K Dynamic Chat Wallpapers</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-amber-200">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                    <span>All 8 Arcade & Couples Romance Games</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 text-amber-200">
-                  <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                  <span>UNLIMITED Posts, Stories & Reels</span>
-                </div>
-                <div className="flex items-center gap-2 text-amber-200">
-                  <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                  <span>VIP Gold Crown & Verified Badge Active</span>
-                </div>
-                <div className="flex items-center gap-2 text-amber-200">
-                  <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                  <span>All 8+ 4K Dynamic Chat Wallpapers</span>
-                </div>
-                <div className="flex items-center gap-2 text-amber-200">
-                  <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                  <span>Spicy Couples Romance Card Games</span>
-                </div>
-              </div>
+              )}
             </div>
 
             {/* Launch CTA Button */}
@@ -429,8 +655,24 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                 className="w-full py-4 rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-pink-500 text-black font-black text-sm shadow-2xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Sparkles className="w-4 h-4 fill-black" />
-                <span>Launch & Use App Now (100% Ready) 🚀</span>
+                <span>
+                  {directApproval.isPartialGamesPurchase
+                    ? 'Launch & Play Unlocked Games Now 🚀'
+                    : 'Launch & Use App Now (100% Ready) 🚀'}
+                </span>
               </button>
+
+              {directApproval.isPartialGamesPurchase && (
+                <button
+                  onClick={() => {
+                    setDirectApproval(null);
+                    setCheckoutTab('games');
+                  }}
+                  className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-zinc-200 text-xs font-mono font-bold transition-all cursor-pointer"
+                >
+                  + Pay for Another Game or Bundle Remaining
+                </button>
+              )}
 
               {onOpenReferral && (
                 <button
@@ -555,6 +797,255 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
               </div>
             </div>
 
+            {/* Mode Switcher: Flexible Game Pass (One-by-One / Sum / Pay Once All 8) vs Full VIP */}
+            <div className="grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-black/70 border border-white/15 mb-4">
+              <button
+                type="button"
+                onClick={() => setCheckoutTab('games')}
+                className={`py-2.5 px-3 rounded-xl text-xs font-mono font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  checkoutTab === 'games'
+                    ? 'bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 text-white shadow-lg'
+                    : 'text-zinc-300 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <Gamepad2 className="w-4 h-4 shrink-0" />
+                <span>Pay Per Game / Sum / All 8</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCheckoutTab('vip')}
+                className={`py-2.5 px-3 rounded-xl text-xs font-mono font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  checkoutTab === 'vip'
+                    ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-black shadow-lg'
+                    : 'text-zinc-300 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <Crown className="w-4 h-4 shrink-0" />
+                <span>Full App VIP Plans</span>
+              </button>
+            </div>
+
+            {checkoutTab === 'games' ? (
+              <div className="space-y-4 mb-4 text-left">
+                {/* Step 1: Planned Duration Picker */}
+                <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="text-xs font-mono font-black text-cyan-300 flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-cyan-400" />
+                      Step 1 · Choose Planned Duration
+                    </span>
+                    <span className="text-[11px] font-mono text-zinc-400">
+                      Pay 1 game at a time or sum up · Capped at Pay-Once All-8 price
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    {GAME_DURATION_OPTIONS.map((dur) => {
+                      const isDurSelected = selectedDuration === dur.id;
+                      return (
+                        <button
+                          key={dur.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedDuration(dur.id);
+                            setPurchaseAllBundleFlag(false);
+                          }}
+                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                            isDurSelected
+                              ? 'bg-cyan-500/20 border-cyan-400 ring-1 ring-cyan-400/50 text-white'
+                              : 'bg-black/40 border-white/10 text-zinc-300 hover:border-white/30'
+                          }`}
+                        >
+                          <span className="block text-xs font-black">{dur.shortLabel}</span>
+                          <span className="block text-[11px] font-mono text-amber-300 font-bold">
+                            {formatCurrency(dur.perGameUsd)}/game
+                          </span>
+                          <span className="block text-[10px] font-mono text-emerald-300">
+                            All 8: {formatCurrency(dur.allGamesBundleUsd)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Step 2: Individual / Sum Multi-Game Picker */}
+                <div className="p-3.5 rounded-2xl bg-black/50 border border-white/10 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-mono font-black text-pink-300 flex items-center gap-1.5">
+                      <Layers className="w-4 h-4 text-pink-400" />
+                      Step 2 · Pick 1 Game (One-by-One) or Sum Multiple
+                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const now = Date.now();
+                          const remaining = ARCADE_GAME_CATALOG.filter((g) => {
+                            const ex = unlockedGamesMap[g.id];
+                            return !isVip && (!ex || ex.expiresAtMs <= now);
+                          }).map((g) => g.id);
+                          setSelectedGameIds(remaining);
+                          setPurchaseAllBundleFlag(false);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[10.5px] font-mono font-bold text-white cursor-pointer"
+                      >
+                        Select Locked
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedGameIds(ARCADE_GAME_CATALOG.map((g) => g.id));
+                          setPurchaseAllBundleFlag(true);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 border border-amber-400/40 text-[10.5px] font-mono font-bold text-amber-200 cursor-pointer"
+                      >
+                        All 8 Together
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedGameIds([]);
+                          setPurchaseAllBundleFlag(false);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/15 text-[10.5px] font-mono text-zinc-400 hover:text-white cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {ARCADE_GAME_CATALOG.map((game) => {
+                      const activeEntry = unlockedGamesMap[game.id];
+                      const isAlreadyUnlocked =
+                        isVip || Boolean(activeEntry && activeEntry.expiresAtMs > Date.now());
+                      const isChecked = selectedGameIds.includes(game.id);
+                      const durOpt = activeGamesQuote.duration;
+
+                      return (
+                        <button
+                          key={game.id}
+                          type="button"
+                          onClick={() => {
+                            setPurchaseAllBundleFlag(false);
+                            setSelectedGameIds((prev) =>
+                              prev.includes(game.id)
+                                ? prev.filter((id) => id !== game.id)
+                                : [...prev, game.id]
+                            );
+                          }}
+                          className={`p-3 rounded-xl border text-left transition-all flex items-center justify-between gap-2 cursor-pointer ${
+                            isChecked
+                              ? 'bg-pink-500/20 border-pink-400 ring-1 ring-pink-400/40'
+                              : isAlreadyUnlocked
+                              ? 'bg-emerald-500/10 border-emerald-400/35 hover:border-emerald-400/60'
+                              : 'bg-white/5 border-white/10 hover:border-white/30'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-black text-white truncate">{game.title}</span>
+                              {isAlreadyUnlocked && (
+                                <span className="px-1.5 py-0.2 rounded bg-emerald-500/25 text-emerald-300 text-[9px] font-mono font-bold shrink-0">
+                                  Unlocked
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[10px] font-mono text-zinc-400 block truncate">
+                              {game.subtitle}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-xs font-mono font-bold text-amber-300">
+                              {formatCurrency(durOpt.perGameUsd)}
+                            </span>
+                            <span
+                              className={`w-5 h-5 rounded-md border flex items-center justify-center ${
+                                isChecked
+                                  ? 'bg-pink-500 border-pink-400 text-white'
+                                  : 'bg-black/40 border-white/25 text-transparent'
+                              }`}
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Step 3: Live Quote & Dual Payment Actions (Pay One/Sum vs Pay Once for All 8) */}
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-purple-950/70 via-[#1a152e] to-cyan-950/60 border border-amber-400/45 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <span className="text-[10.5px] font-mono uppercase tracking-wider text-amber-300 font-bold block">
+                        Planned Duration: {activeGamesQuote.duration.label} · {activeGamesQuote.duration.heatCeilingLabel}
+                      </span>
+                      <h4 className="text-sm sm:text-base font-black text-white">
+                        {selectedGameIds.length === 0 && !purchaseAllBundleFlag
+                          ? 'Select 1 or More Games Above — Or Pay Once for All 8'
+                          : activeGamesQuote.isAllGamesBundle
+                          ? `All 8 Games Bundle · Pay Once: ${formatCurrency(activeGamesQuote.finalUsd)}`
+                          : `${activeGamesQuote.selectedGameIds.length} Game${activeGamesQuote.selectedGameIds.length > 1 ? 's' : ''} × ${formatCurrency(activeGamesQuote.duration.perGameUsd)} = ${formatCurrency(activeGamesQuote.finalUsd)}`}
+                      </h4>
+                      {activeGamesQuote.bundleSavingsUsd > 0 && (
+                        <span className="text-[11px] font-mono text-emerald-300 font-bold">
+                          You save {formatCurrency(activeGamesQuote.bundleSavingsUsd)} vs 8 × {formatCurrency(activeGamesQuote.duration.perGameUsd)} ({formatCurrency(activeGamesQuote.rawSumUsd)}) separately!
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="text-left sm:text-right shrink-0">
+                      <span className="text-[10px] font-mono text-zinc-400 block">ALL 8 PAY-ONCE PRICE</span>
+                      <span className="text-lg font-black text-amber-300 font-mono">
+                        {formatCurrency(activeGamesQuote.duration.allGamesBundleUsd)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      disabled={isProcessingPayment || (selectedGameIds.length === 0 && !purchaseAllBundleFlag)}
+                      onClick={() => handleOpenGamesGooglePay(false)}
+                      className={`py-3 px-4 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                        selectedGameIds.length === 0 && !purchaseAllBundleFlag
+                          ? 'bg-white/10 text-zinc-500 cursor-not-allowed'
+                          : 'bg-black hover:bg-zinc-900 border border-white/30 text-white shadow-lg'
+                      }`}
+                    >
+                      <GoogleGIcon className="w-4 h-4" />
+                      <span>
+                        {selectedGameIds.length === 0
+                          ? 'Select Game(s) to Sum'
+                          : activeGamesQuote.selectedGameIds.length === 1
+                          ? `Pay 1 Game (${formatCurrency(activeGamesQuote.finalUsd)})`
+                          : activeGamesQuote.isAllGamesBundle
+                          ? `Pay All 8 (${formatCurrency(activeGamesQuote.finalUsd)})`
+                          : `Pay Sum (${activeGamesQuote.selectedGameIds.length} × ${formatCurrency(activeGamesQuote.duration.perGameUsd)} = ${formatCurrency(activeGamesQuote.finalUsd)})`}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isProcessingPayment}
+                      onClick={() => handleOpenGamesGooglePay(true)}
+                      className="py-3 px-4 rounded-xl bg-gradient-to-r from-amber-400 via-yellow-400 to-pink-500 text-black font-black text-xs shadow-lg hover:scale-[1.01] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Crown className="w-4 h-4 fill-black" />
+                      <span>
+                        Pay Once for All 8 ({formatCurrency(activeGamesQuote.duration.allGamesBundleUsd)} · {activeGamesQuote.duration.shortLabel})
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
             {/* =======================================================
                 ESCAPE 5-MINUTE ADS PROMOTION CARD: $3.89/MONTH
                 ======================================================= */}
@@ -570,10 +1061,10 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                     </span>
                   </div>
                   <h4 className="text-sm font-black text-white">
-                    Escape All 5-Minute Pop-Up Ads ($3.89 Monthly)
+                    Escape Pop-Up Ads ($3.89 Monthly)
                   </h4>
                   <p className="text-xs text-zinc-300">
-                    Never see 5-minute sponsor pop-up ads again. Enjoy uninterrupted continuous streaming of trending love songs and 3D VR jam sessions.
+                    Escape pop-up ads and enjoy uninterrupted continuous streaming of trending love songs and 3D VR jam sessions.
                   </p>
                 </div>
                 <button
@@ -592,7 +1083,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                 FLAGSHIP: SIDE-BY-SIDE 'MONTHLY' VS 'ANNUAL' CARDS
                 ======================================================= */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-              {/* CARD 1: MONTHLY PLAN ($5.99) */}
+              {/* CARD 1: MONTHLY PLAN ($14.50) */}
               <div
                 onClick={() => setBillingCycle('monthly')}
                 className={`p-5 rounded-3xl border-2 transition-all cursor-pointer text-left relative flex flex-col justify-between ${
@@ -619,7 +1110,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                   <div className="mb-4">
                     <div className="flex items-baseline gap-1">
                       <span className="text-3xl font-black text-white">
-                        {formatCurrency(5.99)}
+                        {formatCurrency(14.5)}
                       </span>
                       <span className="text-xs text-zinc-400">/ month</span>
                     </div>
@@ -679,11 +1170,11 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                   }`}
                 >
                   <GoogleGIcon className="w-4 h-4" />
-                  <span>Pay with GPay ({formatCurrency(5.99)})</span>
+                  <span>Pay with GPay ({formatCurrency(14.5)})</span>
                 </button>
               </div>
 
-              {/* CARD 2: ANNUAL PLAN ($29.99) - BEST VALUE HIGHLIGHT */}
+              {/* CARD 2: ANNUAL PLAN ($99.50) - BEST VALUE HIGHLIGHT */}
               <div
                 onClick={() => setBillingCycle('yearly')}
                 className={`p-5 rounded-3xl border-2 transition-all cursor-pointer text-left relative flex flex-col justify-between ${
@@ -695,7 +1186,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                 {/* Best Value Ribbon */}
                 <div className="absolute -top-3 right-4 bg-gradient-to-r from-amber-400 via-yellow-400 to-pink-500 text-black text-[10px] font-black font-mono px-3 py-1 rounded-full shadow-lg flex items-center gap-1">
                   <Crown className="w-3 h-3 fill-black" />
-                  <span>BEST VALUE • SAVE 58%</span>
+                  <span>BEST VALUE • SAVE 43%</span>
                 </div>
 
                 <div>
@@ -716,12 +1207,12 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                   <div className="mb-4">
                     <div className="flex items-baseline gap-1">
                       <span className="text-3xl font-black text-amber-300">
-                        {formatCurrency(29.99)}
+                        {formatCurrency(99.5)}
                       </span>
                       <span className="text-xs text-zinc-400">/ year</span>
                     </div>
                     <div className="text-[11px] font-mono text-emerald-400 font-bold mt-0.5">
-                      ≈ Just {formatCurrency(2.5)}/mo (vs $5.99/mo)
+                      ≈ Just {formatCurrency(8.29)}/mo (vs $14.50/mo)
                     </div>
                   </div>
 
@@ -772,7 +1263,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                   className="w-full py-3.5 rounded-2xl bg-black hover:bg-zinc-900 border-2 border-amber-400 text-white font-black text-xs shadow-xl hover:scale-102 transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <GoogleGIcon className="w-4 h-4" />
-                  <span>Pay with GPay ({formatCurrency(29.99)}) 🚀</span>
+                  <span>Pay with GPay ({formatCurrency(99.5)}) 🚀</span>
                 </button>
               </div>
             </div>
@@ -800,7 +1291,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                   }`}
                 >
                   <span className="block font-black text-xs text-white">1-Day Pass</span>
-                  <span className="text-sm font-extrabold text-rose-300 block">{formatCurrency(0.99)}</span>
+                  <span className="text-sm font-extrabold text-rose-300 block">{formatCurrency(1.0)}</span>
                   <span className="text-[9px] text-zinc-400 flex items-center justify-center gap-0.5 mt-0.5">
                     <GoogleGIcon className="w-2.5 h-2.5" /> GPay
                   </span>
@@ -817,7 +1308,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                   }`}
                 >
                   <span className="block font-black text-xs text-white">7-Day Weekly</span>
-                  <span className="text-sm font-extrabold text-amber-300 block">{formatCurrency(2.49)}</span>
+                  <span className="text-sm font-extrabold text-amber-300 block">{formatCurrency(3.5)}</span>
                   <span className="text-[9px] text-zinc-400 flex items-center justify-center gap-0.5 mt-0.5">
                     <GoogleGIcon className="w-2.5 h-2.5" /> GPay
                   </span>
@@ -834,7 +1325,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                   }`}
                 >
                   <span className="block font-black text-xs text-white">14-Day Bi-Weekly</span>
-                  <span className="text-sm font-extrabold text-cyan-300 block">{formatCurrency(3.99)}</span>
+                  <span className="text-sm font-extrabold text-cyan-300 block">{formatCurrency(7.0)}</span>
                   <span className="text-[9px] text-zinc-400 flex items-center justify-center gap-0.5 mt-0.5">
                     <GoogleGIcon className="w-2.5 h-2.5" /> GPay
                   </span>
@@ -920,9 +1411,9 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                           <td className="py-1.5 text-emerald-400 font-bold">All 8+ 4K Themes Unlocked</td>
                         </tr>
                         <tr>
-                          <td className="py-1.5 text-zinc-300 font-medium">Couples Romance Games</td>
-                          <td className="py-1.5 text-zinc-500">Basic questions only</td>
-                          <td className="py-1.5 text-emerald-400 font-bold">Full Spicy & Truth/Dare Decks</td>
+                          <td className="py-1.5 text-zinc-300 font-medium">All Arcade & Couples Games</td>
+                          <td className="py-1.5 text-rose-400 font-semibold">Locked (Subscription Required)</td>
+                          <td className="py-1.5 text-emerald-400 font-bold">All 8 Games Unlocked Endless ($1.00+)</td>
                         </tr>
                         <tr>
                           <td className="py-1.5 text-zinc-300 font-medium">Safety & Support Concierge</td>
@@ -973,21 +1464,43 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                 )}
               </div>
             </div>
+              </>
+            )}
           </>
         )}
 
         {/* Google Pay Interactive Bottom-Sheet Modal */}
-        <GooglePayCheckoutSheet
-          isOpen={isGooglePaySheetOpen}
-          onClose={() => setIsGooglePaySheetOpen(false)}
-          onConfirmPayment={handleConfirmGooglePay}
-          itemName={getPlanNameByCycle(pendingPlanToPurchase || billingCycle)}
-          itemDescription="Instant Auto-Verify, Unlimited Chats & Calls, VIP Badge, and all 4K Wallpapers unlocked."
-          amountLabel={formatCurrency(getPlanPrice(pendingPlanToPurchase || billingCycle))}
-          usdAmount={getPlanPrice(pendingPlanToPurchase || billingCycle)}
-          userEmail="dylanwisney@gmail.com"
-          isProcessing={isProcessingPayment}
-        />
+        {(() => {
+          const gamesSheetQuote = pendingGamesOrder
+            ? calculateArcadeCheckout(
+                pendingGamesOrder.gameIds,
+                pendingGamesOrder.durationId,
+                pendingGamesOrder.forceAll
+              )
+            : null;
+          const sheetItemName = gamesSheetQuote
+            ? gamesSheetQuote.summaryTitle
+            : getPlanNameByCycle(pendingPlanToPurchase || billingCycle);
+          const sheetUsd = gamesSheetQuote
+            ? gamesSheetQuote.finalUsd
+            : getPlanPrice(pendingPlanToPurchase || billingCycle);
+          const sheetDesc = gamesSheetQuote
+            ? `Unlocks ${gamesSheetQuote.effectiveUnlockedIds.length} arcade game(s) for ${gamesSheetQuote.duration.label}. Paid safely via Google Pay.`
+            : 'Unlocks All Games Endless (Wheel, Aviator Crash, Cards, Viral Quests, Dice, Quizzes), Auto-Verify & Unlimited Chats.';
+          return (
+            <GooglePayCheckoutSheet
+              isOpen={isGooglePaySheetOpen}
+              onClose={() => setIsGooglePaySheetOpen(false)}
+              onConfirmPayment={handleConfirmGooglePay}
+              itemName={sheetItemName}
+              itemDescription={sheetDesc}
+              amountLabel={formatCurrency(sheetUsd)}
+              usdAmount={sheetUsd}
+              userEmail="dylanwisney@gmail.com"
+              isProcessing={isProcessingPayment}
+            />
+          );
+        })()}
       </motion.div>
     </div>
   );

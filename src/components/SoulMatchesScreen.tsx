@@ -31,6 +31,8 @@ import { AmbientOnlineAvatar } from './AmbientOnlineAvatar';
 import { GpsDistanceBadge } from './GpsDistanceBadge';
 import { GpsLocationVerificationModal } from './GpsLocationVerificationModal';
 import { ShareModal } from './ShareModal';
+import { AchievementProfileStrip } from './AchievementBadges';
+import { recordAchievementProgress } from '../services/achievementService';
 import {
   SharePayload,
   createProfileSharePayload,
@@ -225,6 +227,7 @@ export const SoulMatchesScreen: React.FC<SoulMatchesScreenProps> = ({
     }
 
     if (onIncrementCalls) onIncrementCalls();
+    recordAchievementProgress({ messagesSent: 1 });
     if (activeChatProfile) {
       setActiveCall({ type, profile: activeChatProfile });
     }
@@ -279,6 +282,7 @@ export const SoulMatchesScreen: React.FC<SoulMatchesScreenProps> = ({
 
     setChatMessages((prev) => [...prev, userMsg]);
     if (onIncrementChats) onIncrementChats();
+    recordAchievementProgress({ messagesSent: 1 });
     setChatInput('');
     setIsAiTyping(true);
 
@@ -531,6 +535,16 @@ export const SoulMatchesScreen: React.FC<SoulMatchesScreenProps> = ({
                       Target Aim: {profile.soulmateAim}
                     </p>
                   )}
+                  {profile.badges && profile.badges.length > 0 && (
+                    <div className="pt-1.5">
+                      <AchievementProfileStrip
+                        badgeIds={profile.badges}
+                        maxVisible={2}
+                        compact={true}
+                        ownerName={profile.name}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 pt-2">
@@ -627,9 +641,23 @@ export const SoulMatchesScreen: React.FC<SoulMatchesScreenProps> = ({
           </p>
 
           {currentProfile.soulmateAim && (
-            <div className="p-3 mb-6 rounded-xl bg-pink-500/10 border border-pink-500/20 text-xs text-pink-200">
+            <div className="p-3 mb-4 rounded-xl bg-pink-500/10 border border-pink-500/20 text-xs text-pink-200">
               <span className="font-bold uppercase font-mono text-[10px] text-pink-400 block mb-0.5">Soulmate Goal</span>
               {currentProfile.soulmateAim}
+            </div>
+          )}
+
+          {currentProfile.badges && currentProfile.badges.length > 0 && (
+            <div className="mb-5 space-y-1.5">
+              <span className="text-[10px] text-zinc-400 font-mono uppercase block">
+                Earned Digital Badges:
+              </span>
+              <AchievementProfileStrip
+                badgeIds={currentProfile.badges}
+                maxVisible={4}
+                compact={false}
+                ownerName={currentProfile.name}
+              />
             </div>
           )}
 

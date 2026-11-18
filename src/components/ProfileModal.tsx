@@ -33,11 +33,14 @@ import {
   Lock,
   LogOut,
   KeyRound,
+  Award,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { GlassCard } from './GlassCard';
 import { VerificationBadge } from './VerificationBadge';
 import { ProfilePortalModal } from './ProfilePortalModal';
+import { AchievementProfileStrip, AchievementShowcasePanel } from './AchievementBadges';
+import { useAchievements } from '../services/achievementService';
 import { SoulProfile, SocialLinks } from '../types';
 import { syncUserProfileWithGuardian } from '../services/aiGuardianService';
 
@@ -68,6 +71,7 @@ interface ProfileModalProps {
   userId?: string;
   userEmail?: string;
   onReportViolation?: (strike: { type: 'message' | 'post'; reason: string; snippet?: string }) => void;
+  initialTab?: 'quotas' | 'achievements' | 'edit';
 }
 
 export const ProfileModal: React.FC<ProfileModalProps> = ({
@@ -97,9 +101,17 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   userId = 'usr_verified_1',
   userEmail = 'dylan.wisney@gmail.com',
   onReportViolation,
+  initialTab,
 }) => {
-  const [activeTab, setActiveTab] = useState<'quotas' | 'edit'>('quotas');
+  const [activeTab, setActiveTab] = useState<'quotas' | 'achievements' | 'edit'>(initialTab || 'quotas');
   const [isPortalOpen, setIsPortalOpen] = useState(false);
+  const { earnedIds, unlockedCount, totalCount } = useAchievements();
+
+  React.useEffect(() => {
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
 
   // Editable Profile State
   const [name, setName] = useState('Alex Chen');
@@ -192,6 +204,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     matchScore: 100,
     isSoulVerified: isVerified,
     tier: isVip ? 'vip' : 'basic',
+    badges: earnedIds,
     soulmateAim,
     workArea,
     hobbies,
@@ -244,12 +257,17 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 <VerificationBadge tier={isVip ? 'vip' : 'basic'} isVerified={isVerified} size="lg" showLabel />
               </h2>
               <p className="text-xs text-cyan-300 font-mono font-bold">@{socials.instagram || 'alex_twogether'}</p>
+              {earnedIds.length > 0 && (
+                <div className="flex justify-center pt-1">
+                  <AchievementProfileStrip badgeIds={earnedIds} maxVisible={4} compact ownerName={name} />
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
               <button
                 onClick={() => setIsPortalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-400/30 text-xs font-mono font-bold hover:bg-cyan-500/30 transition-all shadow-md hover:scale-105"
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-400/30 text-xs font-mono font-bold hover:bg-cyan-500/30 transition-all shadow-md hover:scale-105 cursor-pointer"
               >
                 <User className="w-3.5 h-3.5" /> View Public Soulmate Portal <ExternalLink className="w-3 h-3" />
               </button>
@@ -260,7 +278,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     onClose();
                     onOpenAdminBillingPortal();
                   }}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-400 text-black border border-amber-300 text-xs font-mono font-black hover:bg-amber-300 transition-all shadow-md hover:scale-105"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-400 text-black border border-amber-300 text-xs font-mono font-black hover:bg-amber-300 transition-all shadow-md hover:scale-105 cursor-pointer"
                 >
                   <Crown className="w-3.5 h-3.5 fill-black" /> Shadow Admin Revenue Portal
                 </button>
@@ -268,27 +286,38 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </div>
           </div>
 
-          {/* Navigation Tabs between Private Quotas and Profile Editor */}
-          <div className="flex items-center justify-center gap-2 border-b border-white/10 pb-2 shrink-0 text-xs font-mono">
+          {/* Navigation Tabs between Quotas, Achievements, and Profile Editor */}
+          <div className="flex items-center justify-center gap-1.5 sm:gap-2 border-b border-white/10 pb-2 shrink-0 text-xs font-mono flex-wrap">
             <button
               onClick={() => setActiveTab('quotas')}
-              className={`px-4 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 ${
+              className={`px-3 sm:px-4 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'quotas'
                   ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg'
                   : 'bg-white/5 text-zinc-400 hover:text-white'
               }`}
             >
-              <Zap className="w-3.5 h-3.5 text-amber-300" /> Daily Quota & Usage Staffs
+              <Zap className="w-3.5 h-3.5 text-amber-300" /> Usage & Status
+            </button>
+            <button
+              onClick={() => setActiveTab('achievements')}
+              className={`px-3 sm:px-4 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'achievements'
+                  ? 'bg-gradient-to-r from-amber-400 to-pink-500 text-black font-black shadow-lg'
+                  : 'bg-white/5 text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Award className={`w-3.5 h-3.5 ${activeTab === 'achievements' ? 'text-black' : 'text-amber-300'}`} />
+              <span>Badges ({unlockedCount}/{totalCount})</span>
             </button>
             <button
               onClick={() => setActiveTab('edit')}
-              className={`px-4 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 ${
+              className={`px-3 sm:px-4 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'edit'
                   ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-lg'
                   : 'bg-white/5 text-zinc-400 hover:text-white'
               }`}
             >
-              <Edit3 className="w-3.5 h-3.5 text-cyan-300" /> Edit Soul Profile
+              <Edit3 className="w-3.5 h-3.5 text-cyan-300" /> Edit Profile
             </button>
           </div>
 
@@ -306,7 +335,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       <div>
                         <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block">Membership Plan</span>
                         <p className={`text-sm font-black ${isVip ? 'text-amber-300' : 'text-white'}`}>
-                          {isVip ? 'VIP Gold Unlimited ($0.99/day, $2.49/wk, $5.99/mo)' : 'Basic Free Tier'}
+                          {isVip ? 'VIP Gold Unlimited ($1.00/day, $3.50/wk, $14.50/mo)' : 'Basic Free Tier'}
                         </p>
                       </div>
                     </div>
@@ -565,6 +594,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   </button>
                 )}
               </div>
+            )}
+
+            {activeTab === 'achievements' && (
+              <AchievementShowcasePanel />
             )}
 
             {activeTab === 'edit' && (

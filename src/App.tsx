@@ -24,8 +24,19 @@ import { AdWatcherModal } from './components/AdWatcherModal';
 import { AdsCenterModal } from './components/AdsCenterModal';
 import { OwnerBackendConsole } from './components/OwnerBackendConsole';
 import { OwnerClusterToastContainer } from './components/OwnerClusterToastContainer';
-import { SoulProfile, WarningStrike, ActiveSubscriptionRecord } from './types';
-import { BASIC_LIMITS } from './data/subscriptionData';
+import {
+  SoulProfile,
+  WarningStrike,
+  ActiveSubscriptionRecord,
+  ArcadeGameId,
+  GamePlanDurationId,
+  GameUnlockEntry,
+} from './types';
+import {
+  BASIC_LIMITS,
+  loadActiveUnlockedGamesMap,
+  saveUnlockedGamesMap,
+} from './data/subscriptionData';
 import {
   syncUserProfileWithGuardian,
   logoutOwnerBackend,
@@ -239,6 +250,31 @@ export default function App() {
     }
   });
 
+  const [unlockedGamesMap, setUnlockedGamesMap] = useState<Partial<Record<ArcadeGameId, GameUnlockEntry>>>(() =>
+    loadActiveUnlockedGamesMap()
+  );
+
+  const handleGamesUnlocked = (entries: GameUnlockEntry[]) => {
+    setUnlockedGamesMap((prev) => {
+      const now = Date.now();
+      const next: Partial<Record<ArcadeGameId, GameUnlockEntry>> = {};
+      for (const k of Object.keys(prev) as ArcadeGameId[]) {
+        const existing = prev[k];
+        if (existing && existing.expiresAtMs > now) {
+          next[k] = existing;
+        }
+      }
+      for (const entry of entries) {
+        const current = next[entry.gameId];
+        if (!current || entry.expiresAtMs >= current.expiresAtMs) {
+          next[entry.gameId] = entry;
+        }
+      }
+      saveUnlockedGamesMap(next);
+      return next;
+    });
+  };
+
   const handleSubscriptionApproved = (sub: ActiveSubscriptionRecord) => {
     setActiveSubscription(sub);
     setIsVip(true);
@@ -279,6 +315,22 @@ export default function App() {
   const [chatsUsed, setChatsUsed] = useState<number>(2);
   const [callsUsed, setCallsUsed] = useState<number>(1);
   const [activeWallpaperId, setActiveWallpaperId] = useState<string>('cyber_midnight');
+  const [isMusicBarDismissed, setIsMusicBarDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('twogether_music_bar_dismissed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleSetMusicBarDismissed = (dismissed: boolean) => {
+    setIsMusicBarDismissed(dismissed);
+    try {
+      localStorage.setItem('twogether_music_bar_dismissed', String(dismissed));
+    } catch {
+      // ignore storage errors
+    }
+  };
 
   // Gifts Wallet State (Points are converted into Gifts: 25 Points = 1 Gift)
   const [giftsBalance, setGiftsBalance] = useState<number>(() => {
@@ -467,6 +519,8 @@ export default function App() {
 
   const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState<boolean>(false);
   const [subscriptionReason, setSubscriptionReason] = useState<string>('');
+  const [preselectedGameIds, setPreselectedGameIds] = useState<ArcadeGameId[]>([]);
+  const [preselectedDuration, setPreselectedDuration] = useState<GamePlanDurationId | undefined>(undefined);
   const [isWallpaperModalOpen, setIsWallpaperModalOpen] = useState<boolean>(false);
   const [isAdminBillingPortalOpen, setIsAdminBillingPortalOpen] = useState<boolean>(false);
   const [isMobileInstallOpen, setIsMobileInstallOpen] = useState<boolean>(false);
@@ -531,8 +585,14 @@ export default function App() {
     setIsAdWatcherOpen(false);
   };
 
-  const handleOpenUpgradeModal = (reason?: string) => {
+  const handleOpenUpgradeModal = (
+    reason?: string,
+    gameIds?: ArcadeGameId[],
+    preferredDuration?: GamePlanDurationId
+  ) => {
     setSubscriptionReason(reason || '');
+    setPreselectedGameIds(Array.isArray(gameIds) ? gameIds : []);
+    setPreselectedDuration(preferredDuration);
     setIsSubscriptionModalOpen(true);
   };
 
@@ -664,6 +724,8 @@ export default function App() {
         onToggleBackendView={() =>
           setBackendViewMode((prev) => (prev === 'owner_backend' ? 'frontend' : 'owner_backend'))
         }
+        isMusicBarVisible={!isMusicBarDismissed}
+        onToggleMusicBar={() => handleSetMusicBarDismissed(!isMusicBarDismissed)}
       />
 
       {/* View Screens — Strict Separation: Owner Back-End Console vs User Front-End */}
@@ -706,7 +768,9 @@ export default function App() {
               <FunGamesScreen
                 onStartIcebreaker={() => setActiveTab('singles')}
                 onOpenSharedBeats={() => setActiveTab('beats')}
-                isVip={isVip}
+                isVip={isVip || !!activeSubscription}
+                activeSubscription={activeSubscription}
+                unlockedGamesMap={unlockedGamesMap}
                 onOpenUpgradeModal={handleOpenUpgradeModal}
                 currentUserId={currentUser?.id}
                 currentUserName={currentUser?.name}
@@ -891,13 +955,17 @@ export default function App() {
         onRestoreAccount={handleRestoreBannedAccount}
       />
 
-      {/* VIP Subscription Modal */}
+      {/* VIP & Flexible Game Subscription Modal */}
       <SubscriptionModal
         isOpen={isSubscriptionModalOpen}
         onClose={() => setIsSubscriptionModalOpen(false)}
         isVip={isVip || !!activeSubscription}
         activeSubscription={activeSubscription}
         onSubscriptionApproved={handleSubscriptionApproved}
+        unlockedGamesMap={unlockedGamesMap}
+        preselectedGameIds={preselectedGameIds}
+        initialGameDuration={preselectedDuration}
+        onGamesUnlocked={handleGamesUnlocked}
         onToggleVip={(status) => handleToggleVip(status)}
         onDowngradeToBasic={() => handleToggleVip(false)}
         reasonMessage={subscriptionReason}
@@ -968,9 +1036,11 @@ export default function App() {
         onClose={() => setIsMobileInstallOpen(false)}
       />
 
-      {/* Opening Trending International & Kenyan Love Songs Player */}
+      {/* Opening Trending International & Kenyan Love Songs Player (Dismissible) */}
       <OpeningLoveSongPlayer
         onOpenJamSession={() => setActiveTab('beats')}
+        isVisible={!isMusicBarDismissed}
+        onDismiss={() => handleSetMusicBarDismissed(true)}
       />
 
       {/* 5-Minute Sponsored Ad Watcher Modal (Escaped via $3.89/mo Subscription) */}
@@ -978,7 +1048,6 @@ export default function App() {
         isOpen={isAdWatcherOpen}
         onClose={() => setIsAdWatcherOpen(false)}
         onUpgradeToAdFree={handleUpgradeToAdFree}
-        onEarnPoints={handleEarnPoints}
         hasAdFreeSubscription={hasAdFreeSubscription}
       />
 

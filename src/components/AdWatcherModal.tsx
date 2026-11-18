@@ -1,28 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import {
   X,
-  Sparkles,
-  Zap,
   Clock,
-  ShieldCheck,
-  CheckCircle2,
   Crown,
   Volume2,
   VolumeX,
-  CreditCard,
-  Gift,
-  Flame,
-  Award,
+  SkipForward,
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import confetti from 'canvas-confetti';
-import { GoogleGIcon, GooglePayLogo } from './GooglePayComponents';
+import { motion } from 'motion/react';
+import { GoogleGIcon } from './GooglePayComponents';
 
 interface AdWatcherModalProps {
   isOpen: boolean;
   onClose: () => void;
   onUpgradeToAdFree: () => void;
-  onEarnPoints?: (amount: number, reason: string) => void;
   hasAdFreeSubscription: boolean;
 }
 
@@ -34,7 +25,6 @@ interface SponsorAd {
   description: string;
   ctaText: string;
   imageBannerUrl: string;
-  videoPlaceholderUrl?: string;
   category: string;
   badge: string;
 }
@@ -90,7 +80,6 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
   isOpen,
   onClose,
   onUpgradeToAdFree,
-  onEarnPoints,
   hasAdFreeSubscription,
 }) => {
   const [countdown, setCountdown] = useState<number>(5);
@@ -100,13 +89,11 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      // Pick random ad
       const randIdx = Math.floor(Math.random() * SPONSOR_ADS.length);
       setCurrentAdIndex(randIdx);
       setCountdown(5);
       setCanSkip(false);
 
-      // Countdown timer for 5 seconds
       const interval = setInterval(() => {
         setCountdown((prev) => {
           if (prev <= 1) {
@@ -126,18 +113,8 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
 
   const currentAd = SPONSOR_ADS[currentAdIndex];
 
-  const handleSkipOrClose = () => {
+  const handleSkipAd = () => {
     if (!canSkip) return;
-    if (onEarnPoints) {
-      onEarnPoints(5, 'Sponsored Ad Watched (+5 Points)');
-      try {
-        confetti({
-          particleCount: 40,
-          spread: 60,
-          origin: { y: 0.7 },
-        });
-      } catch {}
-    }
     onClose();
   };
 
@@ -160,15 +137,15 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
             </span>
           </div>
 
-          {/* Countdown & Skip button */}
+          {/* Countdown & Pure Skip Ad button (no points added or taken) */}
           <div className="flex items-center gap-2">
             {canSkip ? (
               <button
-                onClick={handleSkipOrClose}
+                onClick={handleSkipAd}
                 className="px-3 py-1 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black transition-all flex items-center gap-1 cursor-pointer"
               >
-                <span>Continue (+5 Pts)</span>
-                <X className="w-3.5 h-3.5" />
+                <span>Skip Ad</span>
+                <SkipForward className="w-3.5 h-3.5" />
               </button>
             ) : (
               <span className="px-2.5 py-1 rounded-full bg-white/10 text-amber-300 font-mono text-xs font-bold border border-white/10 flex items-center gap-1">
@@ -179,11 +156,12 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
           </div>
         </div>
 
-        {/* Ad Media Banner / Video Simulated Frame */}
+        {/* Ad Media Banner */}
         <div className="relative h-48 sm:h-56 w-full overflow-hidden bg-black group">
           <img
             src={currentAd.imageBannerUrl}
             alt={currentAd.brand}
+            referrerPolicy="no-referrer"
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-[#141022] via-transparent to-black/40" />
@@ -191,6 +169,7 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
           {/* Audio toggle button */}
           <button
             onClick={() => setIsAdSoundMuted(!isAdSoundMuted)}
+            aria-label={isAdSoundMuted ? 'Unmute ad audio' : 'Mute ad audio'}
             className="absolute top-3 right-3 p-2 rounded-full bg-black/60 backdrop-blur-md text-white border border-white/20 text-xs hover:bg-black/80 transition-all cursor-pointer"
           >
             {isAdSoundMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
@@ -221,25 +200,12 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
             </p>
           </div>
 
-          {/* Reward notice */}
-          <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-400/30 flex items-center justify-between text-xs font-mono">
-            <span className="text-emerald-300 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-              Watch reward: +5 Determination Points
-            </span>
-            <span className="text-zinc-400 text-[10px]">
-              Every 5 minutes for non-paying users
-            </span>
-          </div>
-
-          {/* ========================================================
-              CRITICAL: ESCAPE ADS PROMOTION & $3.89/MONTH PLAN
-              ======================================================== */}
+          {/* Escape Ads Promotion */}
           <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-purple-900/30 to-black border-2 border-amber-400/50 space-y-2 text-left shadow-lg">
             <div className="flex items-center justify-between">
               <span className="text-xs font-mono font-extrabold text-amber-300 flex items-center gap-1.5 uppercase">
                 <Crown className="w-4 h-4 text-amber-400 fill-amber-400" />
-                Never See 5-Minute Ads Again
+                Escape Pop-Up Ads
               </span>
               <span className="px-2 py-0.5 rounded bg-amber-400 text-black font-mono font-black text-xs">
                 $3.89 / Month
@@ -247,7 +213,7 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
             </div>
 
             <p className="text-[11px] text-zinc-300 leading-snug">
-              To escape all 5-minute video and banner ads, subscribe to our <strong>Ad-Free Music & Love Pass for $3.89 monthly</strong>. Billed strictly via Google Pay with instant in-app activation.
+              Escape pop-up ads with our <strong>Ad-Free Music &amp; Love Pass for $3.89 monthly</strong>. Billed strictly via Google Pay with instant in-app activation.
             </p>
 
             <button
@@ -258,7 +224,7 @@ export const AdWatcherModal: React.FC<AdWatcherModalProps> = ({
               className="w-full py-3 rounded-xl bg-black hover:bg-zinc-900 border border-white/30 text-white font-black text-xs shadow-lg hover:scale-[1.01] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
               <GoogleGIcon className="w-4 h-4" />
-              <span>Subscribe with Google Pay ($3.89/mo) & Remove Ads ➔</span>
+              <span>Subscribe with Google Pay ($3.89/mo) &amp; Remove Ads ➔</span>
             </button>
           </div>
         </div>

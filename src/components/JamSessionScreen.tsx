@@ -11,7 +11,6 @@ import {
   Search,
   Globe,
   Plus,
-  Zap,
   Sliders,
   Headphones,
   Calendar,
@@ -40,70 +39,9 @@ import { JamTrack } from '../types';
 import { Simulated3DVREnvironment } from './Simulated3DVREnvironment';
 import { AudioReactiveVisualizerOverlay, VisualizerMode } from './AudioReactiveVisualizerOverlay';
 import { JamVocalVideoFeed } from './JamVocalVideoFeed';
-import { VRLoungeAmbienceSelector } from './VRLoungeAmbienceSelector';
 import { ScheduledJamsPanel } from './ScheduledJamsPanel';
 import { TRENDING_LOVE_SONGS } from '../data/loveSongsData';
 import { loveSongAudioService } from '../services/loveSongAudioService';
-
-interface SoundPadDef {
-  id: string;
-  label: string;
-  icon: string;
-  color: string;
-  borderColor: string;
-  subtitle: string;
-}
-
-const SOUND_PADS: SoundPadDef[] = [
-  {
-    id: 'log_drum',
-    label: 'Amapiano Log Drum',
-    icon: '🪵',
-    color: 'from-amber-500/20 to-orange-600/30',
-    borderColor: 'border-amber-400/50',
-    subtitle: 'Joburg Deep Thump',
-  },
-  {
-    id: 'sub_boom',
-    label: '808 Sub-Bass Boom',
-    icon: '🥁',
-    color: 'from-pink-500/20 to-rose-600/30',
-    borderColor: 'border-pink-400/50',
-    subtitle: 'Heavy Low-End Drop',
-  },
-  {
-    id: 'drill_hat',
-    label: 'UK Drill Slide Hat',
-    icon: '⚡',
-    color: 'from-cyan-400/20 to-blue-600/30',
-    borderColor: 'border-cyan-400/50',
-    subtitle: 'London Sizzle Roll',
-  },
-  {
-    id: 'vocal_vibe',
-    label: 'Gen-Z Vocal Chop',
-    icon: '🗣️',
-    color: 'from-purple-500/20 to-indigo-600/30',
-    borderColor: 'border-purple-400/50',
-    subtitle: '"Ayo! Vibe!" Chop',
-  },
-  {
-    id: 'airhorn',
-    label: 'Dancehall Airhorn',
-    icon: '🚨',
-    color: 'from-red-500/20 to-amber-500/30',
-    borderColor: 'border-red-400/50',
-    subtitle: 'Kingston Soundclash',
-  },
-  {
-    id: 'dream_chime',
-    label: 'Lover Celestial Swell',
-    icon: '✨',
-    color: 'from-emerald-400/20 to-teal-600/30',
-    borderColor: 'border-emerald-400/50',
-    subtitle: 'Ethereal Chord Pad',
-  },
-];
 
 const GLOBAL_REGIONS = [
   { id: 'all', label: '🌍 All World Love Hits', subtitle: 'Trending Worldwide Romance' },
@@ -192,7 +130,6 @@ export const JamSessionScreen: React.FC<JamSessionScreenProps> = ({
     mockSpectatorSocketService.getSnapshot(initialLoveTracks[0]?.id || 'track_01')
   );
   const [reactions, setReactions] = useState<{ id: string; emoji: string; x: number }[]>([]);
-  const [activePadId, setActivePadId] = useState<string | null>(null);
   const [audioNotice, setAudioNotice] = useState<string | null>(null);
 
   // Room-Level Security State (Private 4-Digit Numeric Passcode)
@@ -232,7 +169,6 @@ export const JamSessionScreen: React.FC<JamSessionScreenProps> = ({
   const [joinRoomInput, setJoinRoomInput] = useState<string>('');
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const tracksRef = useRef<JamTrack[]>(tracks);
   const currentTrackIndexRef = useRef<number>(currentTrackIndex);
   tracksRef.current = tracks;
@@ -470,9 +406,6 @@ export const JamSessionScreen: React.FC<JamSessionScreenProps> = ({
       socketService.socket.off('new-reaction', handleNewReaction);
       socketService.socket.off('vr-room-state', handleRoomState);
       socketService.socket.off('vr-users-update', handleRoomState);
-      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
-        audioCtxRef.current.close().catch(() => {});
-      }
     };
   }, [roomId, hasRoomAccess, jamDeviceId, currentUserName, currentUserAvatar, verifiedRoomPin]);
 
@@ -701,122 +634,12 @@ export const JamSessionScreen: React.FC<JamSessionScreenProps> = ({
     return `${mins}:${remainder < 10 ? '0' : ''}${remainder}`;
   };
 
-  // -------------------------------------------------------------
-  // REAL WEB AUDIO DJ SOUNDBOARD & SYNTHESIZER PADS
-  // -------------------------------------------------------------
-  const playLiveSoundPad = useCallback((padId: string) => {
-    try {
-      const AudioCtxClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtxClass) return;
-      if (!audioCtxRef.current) audioCtxRef.current = new AudioCtxClass();
-      const ctx = audioCtxRef.current;
-      const t = ctx.currentTime;
-
-      setActivePadId(padId);
-      setTimeout(() => setActivePadId(null), 300);
-
-      if (padId === 'log_drum') {
-        // Amapiano Log Drum: Resonant hollow pitch drop
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(260, t);
-        osc.frequency.exponentialRampToValueAtTime(52, t + 0.18);
-        gain.gain.setValueAtTime(0.5, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(t);
-        osc.stop(t + 0.3);
-        sendReaction('🪵');
-      } else if (padId === 'sub_boom') {
-        // 808 Sub-Bass Boom
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(140, t);
-        osc.frequency.exponentialRampToValueAtTime(38, t + 0.35);
-        gain.gain.setValueAtTime(0.6, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(t);
-        osc.stop(t + 0.48);
-        sendReaction('🥁');
-      } else if (padId === 'drill_hat') {
-        // UK Drill Slide Hat (high freq metallic burst)
-        [6200, 7800, 9400].forEach((freq, idx) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'square';
-          osc.frequency.setValueAtTime(freq, t + idx * 0.04);
-          gain.gain.setValueAtTime(0.12, t + idx * 0.04);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.04 + 0.05);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(t + idx * 0.04);
-          osc.stop(t + idx * 0.04 + 0.06);
-        });
-        sendReaction('⚡');
-      } else if (padId === 'vocal_vibe') {
-        // Formant Vocal Chop
-        [440, 660, 880].forEach((freq) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sawtooth';
-          osc.frequency.setValueAtTime(freq, t);
-          gain.gain.setValueAtTime(0.1, t);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(t);
-          osc.stop(t + 0.24);
-        });
-        sendReaction('🗣️');
-      } else if (padId === 'airhorn') {
-        // Classic Dancehall Airhorn 3-tone blast
-        [0, 0.12, 0.24].forEach((delay) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sawtooth';
-          osc.frequency.setValueAtTime(466.16, t + delay); // Bb4
-          gain.gain.setValueAtTime(0.2, t + delay);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + delay + 0.1);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(t + delay);
-          osc.stop(t + delay + 0.11);
-        });
-        sendReaction('🚨');
-      } else if (padId === 'dream_chime') {
-        // Celestial Chord Swell
-        [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((freq, idx) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(freq, t + idx * 0.05);
-          gain.gain.setValueAtTime(0.15, t + idx * 0.05);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.05 + 0.6);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(t + idx * 0.05);
-          osc.stop(t + idx * 0.05 + 0.65);
-        });
-        sendReaction('✨');
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
-
   // Spin Random World Vibe
   const spinRandomWorldVibe = () => {
     if (tracks.length === 0) return;
     const randomIdx = Math.floor(Math.random() * tracks.length);
     handleSelectTrack(randomIdx);
-    playLiveSoundPad('dream_chime');
+    sendReaction('✨');
     try {
       confetti({
         particleCount: 50,
@@ -1371,9 +1194,6 @@ export const JamSessionScreen: React.FC<JamSessionScreenProps> = ({
         onEmitReaction={sendReaction}
       />
 
-      {/* VR Lounge Virtual Environment Background Soundscape Selector */}
-      <VRLoungeAmbienceSelector />
-
       {/* Schedule Jam & Friend Live Countdown Board */}
       <ScheduledJamsPanel
         tracks={tracks}
@@ -1439,20 +1259,6 @@ export const JamSessionScreen: React.FC<JamSessionScreenProps> = ({
                 </div>
               </div>
 
-              {/* VR Live Soundpad Quick Triggers */}
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {SOUND_PADS.map((pad) => (
-                  <button
-                    key={pad.id}
-                    onClick={() => playLiveSoundPad(pad.id)}
-                    className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/15 border border-white/10 text-xs font-bold transition-all flex items-center gap-1 active:scale-95 cursor-pointer"
-                    title={`Trigger ${pad.label}`}
-                  >
-                    <span>{pad.icon}</span>
-                    <span className="hidden sm:inline text-[11px]">{pad.label.split(' ')[0]}</span>
-                  </button>
-                ))}
-              </div>
             </div>
 
             {/* Scrubber Bar */}
@@ -1629,54 +1435,6 @@ export const JamSessionScreen: React.FC<JamSessionScreenProps> = ({
                   {emoji}
                 </button>
               ))}
-            </div>
-          </GlassCard>
-
-          {/* REAL LIVE DJ SOUNDBOARD & BEAT PAD */}
-          <GlassCard className="p-6 border border-pink-500/40 text-left space-y-4" glowColor="pink">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-[10px] font-mono text-pink-400 uppercase font-bold tracking-widest block">
-                  Interactive Live DJ Beat Pad & Synth
-                </span>
-                <h3 className="text-lg font-black text-white flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-amber-400" /> Gen-Z World Vybz Soundboard
-                </h3>
-              </div>
-              <span className="text-xs font-mono text-zinc-400">Tap to Jam Over Music</span>
-            </div>
-
-            <p className="text-xs text-zinc-300 font-sans">
-              Tap any sound pad below while the music plays to trigger real synthesized beats, drops, and vocal chops that sync instantly with your partner!
-            </p>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-1">
-              {SOUND_PADS.map((pad) => {
-                const isActive = activePadId === pad.id;
-                return (
-                  <button
-                    key={pad.id}
-                    onClick={() => playLiveSoundPad(pad.id)}
-                    className={`p-3.5 rounded-2xl border-2 bg-gradient-to-br ${pad.color} ${pad.borderColor} text-left transition-all cursor-pointer flex flex-col justify-between h-24 ${
-                      isActive
-                        ? 'scale-95 shadow-lg shadow-pink-500/30 brightness-150'
-                        : 'hover:scale-[1.03] hover:brightness-110'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-2xl">{pad.icon}</span>
-                      <span className="text-[10px] font-mono uppercase text-zinc-300 font-bold bg-black/40 px-2 py-0.5 rounded-full">
-                        Pad
-                      </span>
-                    </div>
-
-                    <div>
-                      <p className="text-xs font-black text-white leading-tight truncate">{pad.label}</p>
-                      <p className="text-[10px] text-zinc-300 font-mono truncate">{pad.subtitle}</p>
-                    </div>
-                  </button>
-                );
-              })}
             </div>
           </GlassCard>
         </div>

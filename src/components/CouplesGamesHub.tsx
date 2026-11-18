@@ -17,7 +17,6 @@ import {
   PartyPopper,
   Lock,
   Crown,
-  Trophy,
   Dices,
   Clock,
   ShieldCheck,
@@ -34,6 +33,10 @@ import {
   Wifi,
   WifiOff,
   Download,
+  Plane,
+  EyeOff,
+  Zap,
+  TrendingUp,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
@@ -42,6 +45,7 @@ import { VerificationBadge } from './VerificationBadge';
 import { appSoundService } from '../services/appSoundService';
 import { inspectUserAction } from '../services/aiGuardianService';
 import { socketService } from '../services/socket';
+import { ActiveSubscriptionRecord, ArcadeGameId, GamePlanDurationId, GameUnlockEntry } from '../types';
 
 interface PartyPhoneDevice {
   socketId: string;
@@ -151,10 +155,24 @@ function generateCoupleRoomCode(): string {
   return `COUPLE-${Math.floor(1000 + Math.random() * 9000)}`;
 }
 
+export type CoupleGameTabId =
+  | 'wheel'
+  | 'aviator_crash'
+  | 'cards'
+  | 'social_viral'
+  | 'dice'
+  | 'quiz';
+
 interface CouplesGamesHubProps {
   onOpenSharedBeats?: () => void;
   isVip?: boolean;
-  onOpenUpgradeModal?: (reason?: string) => void;
+  activeSubscription?: ActiveSubscriptionRecord | null;
+  unlockedGamesMap?: Partial<Record<ArcadeGameId, GameUnlockEntry>>;
+  onOpenUpgradeModal?: (
+    reason?: string,
+    preselectedGameIds?: ArcadeGameId[],
+    preferredDuration?: GamePlanDurationId
+  ) => void;
   currentUserId?: string;
   currentUserName?: string;
   currentUserEmail?: string;
@@ -162,6 +180,196 @@ interface CouplesGamesHubProps {
   initialPartyRoomCode?: string | null;
   initialCoupleRoomCode?: string | null;
   initialCouplePlayMode?: 'online' | 'offline' | null;
+  excludedWheelGameIds?: number[];
+  wheelCycleCount?: number;
+  lastPlayedWheelGameId?: number | null;
+  onWheelGamePlayed?: (segmentId: number, eligibleSegmentIds: number[]) => void;
+  onResetWheelPool?: () => void;
+  activeGameTabOverride?: CoupleGameTabId;
+  onGameTabChange?: (tab: CoupleGameTabId) => void;
+}
+
+const SPICY_LEVEL_RANK: Record<SpicyVybeLevel, number> = {
+  all: 0,
+  mild: 0,
+  spicy: 1,
+  more_spicy: 2,
+  most_spicy: 3,
+  hot: 4,
+  extra_hot: 5,
+  extremely_hot: 6,
+};
+
+interface SubscriptionCapabilityProfile {
+  planKey: string;
+  tierLabel: string;
+  maxVybeRank: number;
+  maxHeatLabel: string;
+  multiplierCap: number;
+  allowsZeroRepeat: boolean;
+  unlocksAviatorCrash: boolean;
+  nextUpgradeHint: string;
+}
+
+function secureRandomFloat(): number {
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    const arr = new Uint32Array(1);
+    window.crypto.getRandomValues(arr);
+    return arr[0] / (0xffffffff + 1);
+  }
+  return Math.random();
+}
+
+function resolveSubscriptionCapabilities(
+  isVipFlag: boolean,
+  has1DayPass: boolean,
+  activeSub?: ActiveSubscriptionRecord | null,
+  activeGameUnlock?: GameUnlockEntry | null
+): SubscriptionCapabilityProfile {
+  let effectivePlanId = activeSub?.planId || '';
+  if (!effectivePlanId && activeGameUnlock && activeGameUnlock.expiresAtMs > Date.now()) {
+    effectivePlanId = activeGameUnlock.planId;
+  }
+  if (!effectivePlanId && isVipFlag) {
+    try {
+      const savedSub = localStorage.getItem('twogether_active_subscription');
+      if (savedSub) {
+        const parsed: ActiveSubscriptionRecord = JSON.parse(savedSub);
+        if (parsed && parsed.expiresAtMs > Date.now()) {
+          effectivePlanId = parsed.planId;
+        }
+      }
+      if (!effectivePlanId) {
+        const unlocked = JSON.parse(localStorage.getItem('twogether_unlocked_features') || '[]');
+        if (Array.isArray(unlocked)) {
+          if (unlocked.includes('spicy_decks')) effectivePlanId = 'weekly';
+          else if (unlocked.includes('spicy_games_1day')) effectivePlanId = 'daily';
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (effectivePlanId === 'monthly' || effectivePlanId === 'yearly' || (isVipFlag && !effectivePlanId)) {
+    return {
+      planKey: effectivePlanId || 'vip_unlimited',
+      tierLabel: effectivePlanId === 'yearly' ? 'Annual Unlimited VIP ($99.50/yr)' : 'Monthly VIP Unlimited ($14.50/mo)',
+      maxVybeRank: 6,
+      maxHeatLabel: 'Extremely Hot & Unfiltered',
+      multiplierCap: 12.0,
+      allowsZeroRepeat: true,
+      unlocksAviatorCrash: true,
+      nextUpgradeHint: 'Maximum tier unlocked: zero repeats + all 6 nasty tiers + 12.0x Aviator boost!',
+    };
+  }
+
+  if (effectivePlanId === 'weekly' || effectivePlanId === 'two_weeks') {
+    return {
+      planKey: effectivePlanId,
+      tierLabel: effectivePlanId === 'two_weeks' ? 'Bi-Weekly Heat Pass ($7.00)' : 'Weekly VIP Heat Pass ($3.50)',
+      maxVybeRank: 5,
+      maxHeatLabel: 'Hot & Extra Hot',
+      multiplierCap: 6.5,
+      allowsZeroRepeat: true,
+      unlocksAviatorCrash: true,
+      nextUpgradeHint: 'Upgrade to Monthly VIP ($14.50) to unlock Extremely Hot & 12.0x Aviator boost!',
+    };
+  }
+
+  if (effectivePlanId === 'daily' || effectivePlanId === 'ad_free_monthly' || has1DayPass) {
+    return {
+      planKey: effectivePlanId || 'daily',
+      tierLabel: effectivePlanId === 'ad_free_monthly' ? 'Ad-Free Music & Spicy Pass ($3.89)' : '1-Day Momentum Pass ($1.00)',
+      maxVybeRank: 3,
+      maxHeatLabel: 'Spicy · More Spicy · Most Spicy',
+      multiplierCap: 3.5,
+      allowsZeroRepeat: true,
+      unlocksAviatorCrash: true,
+      nextUpgradeHint: 'Upgrade to Weekly ($3.50) or Monthly VIP ($14.50) for Hot, Extra Hot & Extremely Hot!',
+    };
+  }
+
+  return {
+    planKey: 'unsubscribed',
+    tierLabel: 'Paid Subscription Required',
+    maxVybeRank: -1,
+    maxHeatLabel: 'Subscription Required ($1.00+)',
+    multiplierCap: 0,
+    allowsZeroRepeat: false,
+    unlocksAviatorCrash: false,
+    nextUpgradeHint:
+      'Subscribe with Google Pay ($1.00 1-Day · $3.50 Weekly · $3.89 Ad-Free · $7.00 Bi-Weekly · $14.50 Monthly · $99.50 Annual) to unlock all games!',
+  };
+}
+
+// -------------------------------------------------------------
+// ENDLESS PROCEDURAL ACTIVITY SYNTHESIZER (ZERO REPETITION)
+// -------------------------------------------------------------
+const SYNTH_OPENERS: Record<number, string[]> = {
+  0: ['Warm cheek kiss & say why you adore', 'Hold both hands close and gaze lovingly while praising', 'Play a slow living-room melody and sway gently holding'],
+  1: ['Trace soft fingertips along', 'Whisper your favorite secret admiration against', 'Hold lingering eye contact for 30s while grazing lips near'],
+  2: ['Contrast an ice-cool fingertip trail with warm breath over', 'Blindfold your partner and deliver three unpredictable kisses on', 'Playfully nibble and soothe with slow kisses around'],
+  3: ['Drop all hesitation and kiss with magnetic rhythm along', 'Dare your partner to stay completely still for 45s while you tease', 'Swap accessories or remove one outer layer before leaning slowly into'],
+  4: ['Warm silky massage oil in your palms and knead deeply along', 'Pin partner gently against the couch cushions and whisper a bold craving near', 'Hover your lips 1mm away without touching for 25s along'],
+  5: ['Take full playful control for a 45-second breathless seduction sequence across', 'Lock eyes with zero talking while kissing slowly from the jawline down to', 'Give a bold 15-second whisper command for your partner to obey around'],
+  6: ['Initiate an uninhibited strangers-in-a-midnight-suite fantasy starting at', 'Commit to 60 uninterrupted seconds of deep breathless closeness sweeping over', 'Confess the exact unfiltered midnight scenario you crave right now while holding'],
+};
+
+const SYNTH_ZONES: Record<number, string[]> = {
+  0: ['their cheek & temple', 'their fingertips & palm', 'their forehead & shoulders'],
+  1: ['their jawline & collarbone', 'behind the ear & neck pulse', 'their wrists & lower arm'],
+  2: ['their warm neck & shoulders', 'their parted lower lip', 'the small of their lower back'],
+  3: ['their waist & upper hips', 'their bare spine line', 'their pulse point behind the ear'],
+  4: ['their lower back & glutes', 'their inner wrists & neck', 'their hips & upper thigh'],
+  5: ['their collarbone, lips & hips', 'their inner thigh & waist', 'their ear, mouth & jawline'],
+  6: ['every sensitive pulse point from lips to waist', 'their lower back, hips & parted lips', 'their bare neck, spine & upper thighs'],
+};
+
+const SYNTH_TWISTS: string[] = [
+  '— switch lead roles immediately when the countdown ends.',
+  'while keeping unbroken eye contact for maximum oxytocin synergy.',
+  'accompanied by slow synchronized deep breathing.',
+  'before trading one bold unspoken fantasy whisper.',
+  'ending with a 10-second slow-melting kiss.',
+];
+
+function synthesizeUniqueActivity(
+  rank: number,
+  seedOffset: number,
+  alreadySeen: Set<string>,
+  forPartner?: string
+): { key: string; text: string; benefit: string; durationSec: number } {
+  const safeRank = Math.max(0, Math.min(6, rank));
+  const openers = SYNTH_OPENERS[safeRank] || SYNTH_OPENERS[1];
+  const zones = SYNTH_ZONES[safeRank] || SYNTH_ZONES[1];
+
+  for (let attempt = 0; attempt < 36; attempt++) {
+    const oIdx = Math.floor(secureRandomFloat() * openers.length);
+    const zIdx = Math.floor(secureRandomFloat() * zones.length);
+    const tIdx = Math.floor(secureRandomFloat() * SYNTH_TWISTS.length);
+    const baseKey = `synth_${safeRank}_${oIdx}_${zIdx}_${tIdx}`;
+    const finalKey = attempt === 35 ? `${baseKey}_${seedOffset}` : baseKey;
+    if (!alreadySeen.has(finalKey) || attempt === 35) {
+      const targetPrefix = forPartner ? `${forPartner}: ` : '';
+      const roundTag = attempt === 35 ? ` (Remix #${seedOffset + 1})` : '';
+      return {
+        key: finalKey,
+        text: `${targetPrefix}${openers[oIdx]} ${zones[zIdx]} ${SYNTH_TWISTS[tIdx]}${roundTag}`,
+        benefit:
+          safeRank >= 4
+            ? 'Triggers intense dopamine-oxytocin surge & amplifies sensory anticipation.'
+            : 'Builds spontaneous novelty, mutual trust, and warm tactile connection.',
+        durationSec: safeRank >= 4 ? 60 : 45,
+      };
+    }
+  }
+  return {
+    key: `synth_${safeRank}_${Date.now()}`,
+    text: 'Deliver a 45-second spontaneous slow sensual kiss with unbroken eye contact.',
+    benefit: 'Boosts mutual physical harmony & intimacy chemistry.',
+    durationSec: 45,
+  };
 }
 
 // -------------------------------------------------------------
@@ -195,22 +403,22 @@ export const SPICY_VYBE_TIERS: SpicyVybeTierInfo[] = [
     label: 'All Vybes (Full Spectrum)',
     shortLabel: 'All Vybes',
     icon: '✨',
-    isSubscriptionOnly: false,
-    badge: 'ALL',
+    isSubscriptionOnly: true,
+    badge: 'PLAN',
     color: '#ec4899',
     gradient: 'from-pink-500 to-purple-600',
-    description: 'Explore all available intimate game variations across the full spectrum',
+    description: 'Explore all unlocked intimate game variations included in your active subscription',
   },
   {
     id: 'mild',
     label: 'Mild & Sweet Romance',
     shortLabel: 'Mild Vybe',
     icon: '🌸',
-    isSubscriptionOnly: false,
-    badge: 'BASIC FREE',
+    isSubscriptionOnly: true,
+    badge: 'PLAN',
     color: '#10b981',
     gradient: 'from-emerald-500 to-teal-600',
-    description: 'Gentle affection, soft hugs, nostalgic slow dance, forehead kisses (5-prompt loop, rests near 2h so next day brings more vybe)',
+    description: 'Gentle affection, soft hugs, nostalgic slow dance & forehead kisses — unlocked on all paid plans ($1.00+)',
   },
   {
     id: 'spicy',
@@ -583,7 +791,6 @@ export interface CardDeckItem {
   icon: string;
   forWhom: string;
   cardPrompt: string;
-  rewardPoints: number;
   intensity: 'Mild' | 'Spicy' | 'Very Naughty & Healthy';
   vybeLevel: SpicyVybeLevel;
 }
@@ -595,7 +802,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🌶️',
     forWhom: 'Partner 1',
     cardPrompt: 'What is the absolute favorite part of my body to touch, and what physical sensation do you experience when you touch it?',
-    rewardPoints: 60,
     intensity: 'Spicy',
     vybeLevel: 'spicy',
   },
@@ -605,7 +811,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🔥',
     forWhom: 'Partner 2',
     cardPrompt: 'Slowly unbutton or unzip one article of partner’s clothing using only your teeth, maintaining eye contact.',
-    rewardPoints: 85,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'extra_hot',
   },
@@ -615,7 +820,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '💋',
     forWhom: 'Both Partners',
     cardPrompt: 'Whisper into partner’s ear the exact naughty scenario you want to unfold tonight once the lights go out.',
-    rewardPoints: 90,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'most_spicy',
   },
@@ -625,7 +829,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '💃',
     forWhom: 'Both Soulmates',
     cardPrompt: 'Put on a classic 70s soul record or 80s love ballad and slow dance cheek-to-cheek in the living room for one full song.',
-    rewardPoints: 75,
     intensity: 'Mild',
     vybeLevel: 'mild',
   },
@@ -635,7 +838,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🌶️',
     forWhom: 'Partner 2',
     cardPrompt: 'Have you ever had a naughty dream about me that made you wake up breathing heavily? Describe the opening scene.',
-    rewardPoints: 70,
     intensity: 'Spicy',
     vybeLevel: 'spicy',
   },
@@ -645,7 +847,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🔥',
     forWhom: 'Partner 1',
     cardPrompt: 'Give your partner a 60-second sensual shoulder and collarbone kiss trail without using your hands to hold them.',
-    rewardPoints: 80,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'more_spicy',
   },
@@ -655,7 +856,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '💋',
     forWhom: 'Both Partners',
     cardPrompt: 'Confess one naughty bedroom boundary or fantasy you have secretly wanted to explore with me in a safe, loving atmosphere.',
-    rewardPoints: 95,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'extremely_hot',
   },
@@ -665,7 +865,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '💃',
     forWhom: 'Both Soulmates',
     cardPrompt: 'Dim all the lamps, light a single candle, and tell the story of the first time you realized physical attraction was turning into real soul love.',
-    rewardPoints: 80,
     intensity: 'Mild',
     vybeLevel: 'mild',
   },
@@ -675,7 +874,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🌶️',
     forWhom: 'Partner 1',
     cardPrompt: 'What kind of kiss from me makes you completely melt and lose all train of thought?',
-    rewardPoints: 65,
     intensity: 'Spicy',
     vybeLevel: 'spicy',
   },
@@ -685,7 +883,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🔥',
     forWhom: 'Partner 2',
     cardPrompt: 'Trace your lips 1 millimeter away from partner’s lips for 30 seconds without actually letting your lips touch. Feel the electric heat.',
-    rewardPoints: 85,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'hot',
   },
@@ -695,7 +892,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '💋',
     forWhom: 'Both Partners',
     cardPrompt: 'Set a phone timer for 3 minutes. Take turns whispering one naughty thing you love about each other every 10 seconds.',
-    rewardPoints: 90,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'hot',
   },
@@ -705,7 +901,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '💃',
     forWhom: 'Both Soulmates',
     cardPrompt: 'Share a glass of wine or hot tea while seated so close your thighs are touching, tracing slow circles on each other’s hands.',
-    rewardPoints: 70,
     intensity: 'Mild',
     vybeLevel: 'mild',
   },
@@ -715,7 +910,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🍑',
     forWhom: 'Partner 1',
     cardPrompt: 'Perform a slow 45-second lap seduction sway to a low-bpm Afrobeats or lo-fi rhythm with zero talking and deep eye lock.',
-    rewardPoints: 95,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'most_spicy',
   },
@@ -725,7 +919,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🫦',
     forWhom: 'Partner 2',
     cardPrompt: 'Describe in exact sensory detail the last time looking at me across the room made your heart race with pure attraction.',
-    rewardPoints: 85,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'extra_hot',
   },
@@ -735,7 +928,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '💥',
     forWhom: 'Both Partners',
     cardPrompt: 'Play out an alter-ego fantasy: introduce yourselves as two strangers meeting in a luxury hotel lounge who cannot resist each other.',
-    rewardPoints: 110,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'extremely_hot',
   },
@@ -745,7 +937,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🔥',
     forWhom: 'Both Soulmates',
     cardPrompt: 'Alternate slow warm breaths and light fingertip chills down each other’s bare spines for 60 uninterrupted seconds.',
-    rewardPoints: 80,
     intensity: 'Very Naughty & Healthy',
     vybeLevel: 'hot',
   },
@@ -755,7 +946,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '🌸',
     forWhom: 'Both Soulmates',
     cardPrompt: 'Hold both of your partner’s hands, look into their eyes for 30 seconds, and name three small habits they do that make you feel deeply cherished.',
-    rewardPoints: 75,
     intensity: 'Mild',
     vybeLevel: 'mild',
   },
@@ -765,7 +955,6 @@ const ENDLESS_CARDS_DECK: CardDeckItem[] = [
     icon: '💞',
     forWhom: 'Partner 1',
     cardPrompt: 'Place a warm lingering kiss on partner’s forehead and describe your happiest peaceful morning waking up next to them.',
-    rewardPoints: 75,
     intensity: 'Mild',
     vybeLevel: 'mild',
   },
@@ -854,7 +1043,6 @@ export interface ViralSocialChallengeItem {
   setup: string;
   rules: string[];
   trendingSoundtrack: string;
-  rewardPoints: number;
 }
 
 const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
@@ -872,7 +1060,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'Whoever has more fingers up gets a 20-second forehead & cheek kiss!',
     ],
     trendingSoundtrack: 'Viral Finger Down Lo-Fi Beat • 112 BPM',
-    rewardPoints: 75,
   },
   {
     id: 'vc_phone',
@@ -888,7 +1075,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'End with both leaning in for a sweet 5-second hug & kiss on camera!',
     ],
     trendingSoundtrack: 'Pass The Phone Trap Symphony • 120 BPM',
-    rewardPoints: 75,
   },
   {
     id: 'vc_telepathy',
@@ -905,7 +1091,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'Match 3 out of 3 = 100% Soulmate Telepathy confirmed!',
     ],
     trendingSoundtrack: 'Tokyo Drift Synthwave Bass • 128 BPM',
-    rewardPoints: 75,
   },
   {
     id: 'vc_makeup',
@@ -921,7 +1106,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'Reveal the masterpiece on camera and rate the aesthetic out of 10!',
     ],
     trendingSoundtrack: 'Playful Upbeat Funk Drop • 116 BPM',
-    rewardPoints: 75,
   },
   {
     id: 'vc_pose',
@@ -938,7 +1122,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'Hold each pose steady for 3 seconds on camera!',
     ],
     trendingSoundtrack: 'Countdown 3-2-1 Boom • 124 BPM',
-    rewardPoints: 75,
   },
   {
     id: 'vc_outfit',
@@ -954,7 +1137,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'Sync to an international drill or Baile funk beat!',
     ],
     trendingSoundtrack: 'Rio Favela Baile & Phonk • 132 BPM',
-    rewardPoints: 150,
   },
   {
     id: 'vc_ice_whisper',
@@ -970,7 +1152,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'Rate the goosebumps reaction out of 10!',
     ],
     trendingSoundtrack: 'Midnight R&B Sub-Bass • 96 BPM',
-    rewardPoints: 150,
   },
   {
     id: 'vc_whisper_ear',
@@ -986,7 +1167,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'Whoever blushes or bites their lip first owes a 45-second lap tease!',
     ],
     trendingSoundtrack: 'Sensual Late Night Synth • 92 BPM',
-    rewardPoints: 150,
   },
   {
     id: 'vc_one_mm_kiss',
@@ -1002,7 +1182,6 @@ const VIRAL_SOCIAL_CHALLENGES: ViralSocialChallengeItem[] = [
       'When the beat drops, melt into a passionate deep kiss!',
     ],
     trendingSoundtrack: 'Slow Tension Beat Drop • 100 BPM',
-    rewardPoints: 150,
   },
 ];
 
@@ -1022,6 +1201,8 @@ const FINGER_DOWN_QUESTIONS = [
 export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
   onOpenSharedBeats,
   isVip = false,
+  activeSubscription,
+  unlockedGamesMap = {},
   onOpenUpgradeModal,
   currentUserId,
   currentUserName,
@@ -1030,26 +1211,49 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
   initialPartyRoomCode,
   initialCoupleRoomCode,
   initialCouplePlayMode,
+  excludedWheelGameIds,
+  wheelCycleCount,
+  lastPlayedWheelGameId,
+  onWheelGamePlayed,
+  onResetWheelPool,
+  activeGameTabOverride,
+  onGameTabChange,
 }) => {
-  // Navigation & Synergy Points
-  const [activeGameTab, setActiveGameTab] = useState<'wheel' | 'cards' | 'social_viral' | 'dice' | 'quiz'>('wheel');
-  const [synergyPoints, setSynergyPoints] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('twogether_synergy_pts');
-      return saved ? Number(saved) : 1580;
-    } catch {
-      return 1580;
-    }
-  });
+  // Navigation
+  const [activeGameTab, setActiveGameTab] = useState<CoupleGameTabId>(
+    activeGameTabOverride || 'wheel'
+  );
 
-  // Sound Synth & Spin Interval Refs
+  useEffect(() => {
+    if (activeGameTabOverride) {
+      setActiveGameTab(activeGameTabOverride);
+    }
+  }, [activeGameTabOverride]);
+
+  const selectGameTab = (tab: CoupleGameTabId) => {
+    setActiveGameTab(tab);
+    onGameTabChange?.(tab);
+  };
+
+  // Sound Synth & Spin / Aviator Animation Refs
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const spinTickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const spinRafRef = useRef<number | null>(null);
+  const whirControllerRef = useRef<{ updateSpeed: (speedNorm: number) => void; stop: () => void } | null>(null);
+  const crashRafRef = useRef<number | null>(null);
+  const dareFlipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
-      if (spinTickIntervalRef.current) {
-        clearInterval(spinTickIntervalRef.current);
+      if (spinRafRef.current !== null) {
+        cancelAnimationFrame(spinRafRef.current);
+        spinRafRef.current = null;
+      }
+      if (whirControllerRef.current) {
+        whirControllerRef.current.stop();
+        whirControllerRef.current = null;
+      }
+      if (dareFlipTimeoutRef.current) {
+        clearTimeout(dareFlipTimeoutRef.current);
       }
       if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
         audioCtxRef.current.close().catch(() => {});
@@ -1057,44 +1261,10 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
     };
   }, []);
 
-  // Play mechanical ticking sound as wheel pegs pass pointer (respects app popup mute)
-  const playMechanicalTick = useCallback((pitchVariance = 0) => {
+  // Play subtle tactile mechanical peg-click sound as wheel pegs pass pointer (respects app popup mute)
+  const playMechanicalTick = useCallback((pitchVariance = 0, speedRatio = 0.72) => {
     try {
-      if (appSoundService.getIsPopupSoundMuted()) {
-        if (typeof navigator !== 'undefined' && navigator.vibrate) {
-          navigator.vibrate(8);
-        }
-        return;
-      }
-
-      const AudioCtxClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtxClass) return;
-
-      if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-        audioCtxRef.current = new AudioCtxClass();
-      }
-      if (audioCtxRef.current.state === 'suspended') {
-        audioCtxRef.current.resume().catch(() => {});
-      }
-      const ctx = audioCtxRef.current;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(540 + pitchVariance, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(140, ctx.currentTime + 0.025);
-
-      gain.gain.setValueAtTime(0.18, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.03);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start();
-      osc.stop(ctx.currentTime + 0.035);
-
+      appSoundService.playWheelPegClick(speedRatio, pitchVariance);
       // Light haptic feedback if supported on mobile
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
         navigator.vibrate(8);
@@ -1104,30 +1274,10 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
     }
   }, []);
 
-  // Play triumphant completion chime (respects app popup mute)
+  // Play triumphant completion chime (respects app popup mute & shares AudioContext)
   const playWinChime = useCallback(() => {
     try {
-      if (appSoundService.getIsPopupSoundMuted()) return;
-
-      const AudioCtxClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtxClass) return;
-      if (!audioCtxRef.current) audioCtxRef.current = new AudioCtxClass();
-      const ctx = audioCtxRef.current;
-
-      [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.08);
-        gain.gain.setValueAtTime(0.2, ctx.currentTime + i * 0.08);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.08 + 0.4);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(ctx.currentTime + i * 0.08);
-        osc.stop(ctx.currentTime + i * 0.08 + 0.45);
-      });
+      appSoundService.playAlertChime('celebration');
     } catch {
       // ignore
     }
@@ -1665,37 +1815,8 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
   });
 
   // -------------------------------------------------------------
-  // BASIC QUOTA (5 PLAYS) & 2-HOUR DAILY REST TRACKER vs VIP THROUGHOUT
+  // PAID SUBSCRIPTION ENFORCEMENT (ALL GAMES REQUIRE PAID PLAN)
   // -------------------------------------------------------------
-  const [basicPlayCount, setBasicPlayCount] = useState<number>(() => {
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const savedDate = localStorage.getItem('twogether_basic_game_date');
-      if (savedDate !== today) {
-        localStorage.setItem('twogether_basic_game_date', today);
-        localStorage.setItem('twogether_basic_game_plays', '0');
-        localStorage.setItem('twogether_basic_game_session_start', String(Date.now()));
-        return 0;
-      }
-      const savedPlays = localStorage.getItem('twogether_basic_game_plays');
-      return savedPlays ? parseInt(savedPlays, 10) : 0;
-    } catch {
-      return 0;
-    }
-  });
-
-  const [basicSessionStart] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('twogether_basic_game_session_start');
-      if (saved) return Number(saved);
-      const now = Date.now();
-      localStorage.setItem('twogether_basic_game_session_start', String(now));
-      return now;
-    } catch {
-      return Date.now();
-    }
-  });
-
   const [basicPromptCycleIdx, setBasicPromptCycleIdx] = useState<number>(0);
 
   // VIP Feature States: AI Naughty Generator, Custom Partner Dare, VIP Teaser Drawer
@@ -1713,78 +1834,283 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
 
   const [showVipPreviewDrawer, setShowVipPreviewDrawer] = useState<boolean>(false);
 
-  // Determine VIP vs Basic Status
-  const isVipOrPass = Boolean(isVip || has1DaySpicyPass);
-  const elapsedMinutes = Math.floor((Date.now() - basicSessionStart) / (60 * 1000));
-  // Basic resting limit: triggers if basic plays reach 5 or session draws near 2 hours (~105-120 mins)
-  const isBasicLimitReached = !isVipOrPass && (basicPlayCount >= 5 || elapsedMinutes >= 105);
+  // Determine Subscription Capability Profile & Non-Repeating Seen Vault
+  const activeGameUnlockEntry = unlockedGamesMap[activeGameTab] || null;
+  const isTabUnlocked = (tabId: CoupleGameTabId): boolean => {
+    if (isVip || activeSubscription || has1DaySpicyPass) return true;
+    const rec = unlockedGamesMap[tabId];
+    return Boolean(rec && rec.expiresAtMs > Date.now());
+  };
+  const subProfile = resolveSubscriptionCapabilities(
+    Boolean(isVip),
+    has1DaySpicyPass,
+    activeSubscription,
+    activeGameUnlockEntry
+  );
+  const isVipOrPass = subProfile.allowsZeroRepeat;
+  const requiresPaidSubscription = !isVipOrPass;
+  const isBasicLimitReached = requiresPaidSubscription;
+
+  const openSubscriptionPaywall = useCallback(
+    (gameLabel?: string, explicitGameIds?: ArcadeGameId[]) => {
+      playMechanicalTick(60);
+      if (onOpenUpgradeModal) {
+        const targetIds: ArcadeGameId[] =
+          explicitGameIds && explicitGameIds.length > 0
+            ? explicitGameIds
+            : gameLabel === 'All Arcade Games'
+            ? ['wheel', 'aviator_crash', 'cards', 'social_viral', 'dice', 'quiz', 'singles_quiz', 'singles_cards']
+            : [activeGameTab];
+        onOpenUpgradeModal(
+          gameLabel
+            ? `Unlock ${gameLabel} individually ($0.14/1-Day · $0.49/7-Day · $1.99/30-Day) — or sum games / Pay Once for All 8 ($1.00+) via Google Pay.`
+            : 'Unlock this game ($0.14+) or bundle all 8 games via Google Pay ($1.00+).',
+          targetIds
+        );
+      }
+    },
+    [onOpenUpgradeModal, playMechanicalTick, activeGameTab]
+  );
+
+  // Zero-Repetition Played History Store (Persisted per game mode)
+  const [seenActivityIds, setSeenActivityIds] = useState<Record<string, string[]>>(() => {
+    try {
+      const raw = localStorage.getItem('twogether_seen_activity_ids_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+    return { wheel: [], cards: [], viral: [], dice: [], quiz: [], aviator: [] };
+  });
+
+  const markActivitySeen = useCallback((mode: string, activityKey: string) => {
+    setSeenActivityIds((prev) => {
+      const currentList = prev[mode] || [];
+      if (currentList.includes(activityKey)) return prev;
+      const updated = { ...prev, [mode]: [...currentList, activityKey] };
+      try {
+        localStorage.setItem('twogether_seen_activity_ids_v1', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+  }, []);
+
+  // Fallback local exclusion pool state when rendered outside FunGamesScreen
+  const [internalWheelExcludedIds, setInternalWheelExcludedIds] = useState<number[]>([]);
+  const [internalWheelCycleCount, setInternalWheelCycleCount] = useState<number>(1);
+  const [internalLastPlayedWheelId, setInternalLastPlayedWheelId] = useState<number | null>(null);
+
+  const activeExcludedWheelIds = excludedWheelGameIds ?? internalWheelExcludedIds;
+  const activeWheelCycleCount = wheelCycleCount ?? internalWheelCycleCount;
+  const activeLastPlayedWheelId =
+    lastPlayedWheelGameId !== undefined ? lastPlayedWheelGameId : internalLastPlayedWheelId;
+
+  const recordWheelGamePlayed = useCallback(
+    (segmentId: number, eligibleIds: number[]) => {
+      if (onWheelGamePlayed) {
+        onWheelGamePlayed(segmentId, eligibleIds);
+        return;
+      }
+      setInternalLastPlayedWheelId(segmentId);
+      setInternalWheelExcludedIds((prev) => {
+        const updated = prev.includes(segmentId) ? prev : [...prev, segmentId];
+        const allDone = eligibleIds.length > 0 && eligibleIds.every((id) => updated.includes(id));
+        if (allDone) {
+          setInternalWheelCycleCount((c) => c + 1);
+          return eligibleIds.length > 1 ? [segmentId] : [];
+        }
+        return updated;
+      });
+    },
+    [onWheelGamePlayed]
+  );
+
+  const handleResetSeenVault = (mode?: string) => {
+    setSeenActivityIds((prev) => {
+      const next = mode
+        ? { ...prev, [mode]: [] }
+        : { wheel: [], cards: [], viral: [], dice: [], quiz: [], aviator: [] };
+      try {
+        localStorage.setItem('twogether_seen_activity_ids_v1', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    if (!mode || mode === 'wheel') {
+      if (onResetWheelPool) {
+        onResetWheelPool();
+      } else {
+        setInternalWheelExcludedIds([]);
+        setInternalWheelCycleCount(1);
+        setInternalLastPlayedWheelId(null);
+      }
+    }
+    playMechanicalTick(40);
+  };
+
+  // Extra Synthesized Card & Quiz Pools (Appended live when curated bank completes)
+  const [synthesizedCards, setSynthesizedCards] = useState<CardDeckItem[]>([]);
+  const [synthesizedWheelPrompt, setSynthesizedWheelPrompt] = useState<string | null>(null);
+
+  // Aviator Blind Wheel & 4x 360° Spin States
+  const [isAviatorBlindMode, setIsAviatorBlindMode] = useState<boolean>(true);
+  const [wheelSpinPhase, setWheelSpinPhase] = useState<'IDLE' | 'SPINNING_BLIND' | 'LOCKED'>('IDLE');
+  const [wheelTurnCount, setWheelTurnCount] = useState<number>(0);
+  const [aviatorWheelMultiplier, setAviatorWheelMultiplier] = useState<number>(1.0);
+  const [dareFlipStage, setDareFlipStage] = useState<'IDLE' | 'FLIPPING_BACK' | 'REVEALED'>('IDLE');
+  const [dareFlipKey, setDareFlipKey] = useState<number>(0);
+
+  // Aviator Heat Crash Mini-Game States (Tab 6)
+  const [crashFlightState, setCrashFlightState] = useState<'READY' | 'FLYING' | 'LOCKED' | 'CRASHED'>('READY');
+  const [crashMultiplier, setCrashMultiplier] = useState<number>(1.0);
+  const [crashHeatLabel, setCrashHeatLabel] = useState<string>('🌸 Mild Warmup');
+  const [crashResultDare, setCrashResultDare] = useState<{
+    title: string;
+    text: string;
+    benefit: string;
+    vybeLabel: string;
+    wonMultiplier: number;
+    wasCrashPenalty: boolean;
+  } | null>(null);
+  const secretCrashPointRef = useRef<number>(2.5);
+  const crashStartTsRef = useRef<number>(0);
 
   // Interactive Game Timer
   const [timerSeconds, setTimerSeconds] = useState<number>(60);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  useEffect(() => {
+    return () => {
+      if (crashRafRef.current !== null) {
+        cancelAnimationFrame(crashRafRef.current);
+      }
+    };
+  }, []);
+
   const currentSegment = NAUGHTY_WHEEL_SEGMENTS[winningSegmentIndex] || NAUGHTY_WHEEL_SEGMENTS[0];
-  
-  // In Basic mode, prompt cycles through the 5 sample prompts. In VIP, it is endless throughout.
+
   const currentBasicSamplePrompt = BASIC_SAMPLE_PROMPTS[basicPromptCycleIdx % BASIC_SAMPLE_PROMPTS.length];
   const currentPromptText =
     connectionMode === 'party_10' && syncedPartyPromptText
       ? syncedPartyPromptText
       : !isVipOrPass
       ? currentBasicSamplePrompt.text
-      : (activeCustomDare?.text || currentSegment.prompts[activePromptIndex % currentSegment.prompts.length] || currentSegment.prompts[0]);
+      : activeCustomDare?.text ||
+        synthesizedWheelPrompt ||
+        currentSegment.prompts[activePromptIndex % currentSegment.prompts.length] ||
+        currentSegment.prompts[0];
 
-  // REAL SPINNING WHEEL PHYSICS & MECHANICS - Faster, multiple 360 spins, true lottery randomness
+  // 4x 360° REAL SPINNING WHEEL WITH AVIATOR-STYLE UNKNOWN BLIND LOCK
   const spinPhysicalWheel = () => {
     if (isSpinning) return;
 
-    // Check if Basic daily limit is reached
-    if (isBasicLimitReached) {
-      if (onOpenUpgradeModal) {
-        onOpenUpgradeModal('Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Spicy & Extremely Hot Vybes Throughout via Google Pay ($0.99 / $5.99)!');
-      }
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('4×360° Aviator Wheel');
       return;
     }
 
-    // Check if player selected a subscription-only spicy tier without VIP
     const tierMeta = SPICY_VYBE_TIERS.find((t) => t.id === intensityFilter);
-    if (tierMeta?.isSubscriptionOnly && !isVipOrPass) {
+    const tierRank = SPICY_LEVEL_RANK[intensityFilter] ?? 0;
+    if (tierMeta?.isSubscriptionOnly && (!isVipOrPass || tierRank > subProfile.maxVybeRank)) {
       if (onOpenUpgradeModal) {
-        onOpenUpgradeModal(`Unlock ${tierMeta.label} ($0.99 1-Day Pass or $5.99 VIP via Google Pay) for endless uncapped vybes throughout!`);
+        onOpenUpgradeModal(
+          `Your current plan covers ${subProfile.maxHeatLabel}. Upgrade ($3.50 Weekly / $14.50 VIP via Google Pay) to unlock ${tierMeta.label} and endless non-repeating dares!`
+        );
       }
       return;
     }
 
+    if (dareFlipTimeoutRef.current) {
+      clearTimeout(dareFlipTimeoutRef.current);
+      dareFlipTimeoutRef.current = null;
+    }
     setIsSpinning(true);
+    setWheelSpinPhase('SPINNING_BLIND');
+    setDareFlipStage('FLIPPING_BACK');
+    setWheelTurnCount(1);
+    setAviatorWheelMultiplier(1.0);
     setIsTimerRunning(false);
     setActiveCustomDare(null);
+    setSynthesizedWheelPrompt(null);
 
-    // Filter target segments based on tier
-    let targetSegments = NAUGHTY_WHEEL_SEGMENTS;
-    if (!isVipOrPass) {
-      // Basic free user only spins mild segments (Segments 5, 11)
-      targetSegments = NAUGHTY_WHEEL_SEGMENTS.filter((s) => s.vybeLevel === 'mild');
-      if (targetSegments.length === 0) targetSegments = [NAUGHTY_WHEEL_SEGMENTS[5], NAUGHTY_WHEEL_SEGMENTS[11]];
-    } else {
-      // VIP subscriber can filter by any specific vybe level or play all
+    // Build tier-filtered segments respecting chosen subscription nastiness ceiling
+    const getEligibleWheelSegments = (): NaughtyWheelSegment[] => {
+      if (!isVipOrPass) {
+        const mild = NAUGHTY_WHEEL_SEGMENTS.filter((s) => s.vybeLevel === 'mild');
+        return mild.length > 0 ? mild : [NAUGHTY_WHEEL_SEGMENTS[5], NAUGHTY_WHEEL_SEGMENTS[11]];
+      }
       if (intensityFilter !== 'all') {
-        const matched = NAUGHTY_WHEEL_SEGMENTS.filter((s) => s.vybeLevel === intensityFilter);
-        if (matched.length > 0) targetSegments = matched;
+        const matched = NAUGHTY_WHEEL_SEGMENTS.filter(
+          (s) => s.vybeLevel === intensityFilter && (SPICY_LEVEL_RANK[s.vybeLevel] ?? 0) <= subProfile.maxVybeRank
+        );
+        if (matched.length > 0) return matched;
+      }
+      const withinPlan = NAUGHTY_WHEEL_SEGMENTS.filter(
+        (s) => (SPICY_LEVEL_RANK[s.vybeLevel] ?? 0) <= subProfile.maxVybeRank
+      );
+      return withinPlan.length > 0 ? withinPlan : NAUGHTY_WHEEL_SEGMENTS;
+    };
+
+    const targetSegments = getEligibleWheelSegments();
+    const eligibleSegmentIds = targetSegments.map((s) => s.id);
+
+    // Exclude games already played in the active subscription wheel cycle (and never repeat the immediate prior game)
+    let immediatePoolSegments = targetSegments;
+    if (isVipOrPass) {
+      const unplayedSegments = targetSegments.filter(
+        (s) => !activeExcludedWheelIds.includes(s.id) && s.id !== activeLastPlayedWheelId
+      );
+      if (unplayedSegments.length > 0) {
+        immediatePoolSegments = unplayedSegments;
+      } else {
+        const nonAdjacentSegments = targetSegments.filter((s) => s.id !== activeLastPlayedWheelId);
+        immediatePoolSegments = nonAdjacentSegments.length > 0 ? nonAdjacentSegments : targetSegments;
       }
     }
 
-    // True lottery pick
-    const chosenSegment = targetSegments[Math.floor(Math.random() * targetSegments.length)];
+    // Zero-repetition lookup across all curated prompts in the immediate unplayed segments
+    const seenSet = new Set<string>(seenActivityIds.wheel || []);
+    const unseenCandidates: Array<{ segment: NaughtyWheelSegment; promptIdx: number; key: string }> = [];
+    immediatePoolSegments.forEach((seg) => {
+      seg.prompts.forEach((_p, pIdx) => {
+        const key = `wheel_${seg.id}_${pIdx}`;
+        if (!seenSet.has(key)) {
+          unseenCandidates.push({ segment: seg, promptIdx: pIdx, key });
+        }
+      });
+    });
+
+    let chosenSegment: NaughtyWheelSegment;
+    let chosenPromptIdx = 0;
+    let chosenKey = '';
+    let generatedFreshText: string | null = null;
+
+    if (!isVipOrPass) {
+      chosenSegment = targetSegments[Math.floor(secureRandomFloat() * targetSegments.length)];
+    } else if (unseenCandidates.length > 0) {
+      const pick = unseenCandidates[Math.floor(secureRandomFloat() * unseenCandidates.length)];
+      chosenSegment = pick.segment;
+      chosenPromptIdx = pick.promptIdx;
+      chosenKey = pick.key;
+    } else {
+      // Curated pool 100% seen for remaining games in this cycle: synthesize brand-new activity within chosen tier!
+      chosenSegment = immediatePoolSegments[Math.floor(secureRandomFloat() * immediatePoolSegments.length)];
+      const segRank = Math.min(subProfile.maxVybeRank, SPICY_LEVEL_RANK[chosenSegment.vybeLevel] ?? subProfile.maxVybeRank);
+      const synth = synthesizeUniqueActivity(segRank, seenSet.size, seenSet);
+      generatedFreshText = synth.text;
+      chosenKey = synth.key;
+    }
+
     const chosenIndex = chosenSegment.id;
 
     // 12 segments = 30 degrees per slice.
-    const sliceAngle = 360 / 12; // 30 deg
+    const sliceAngle = 360 / 12;
     const sliceCenter = chosenIndex * sliceAngle + sliceAngle / 2;
     const targetModAngle = (360 - sliceCenter) % 360;
 
-    // Multiple 360-degree fast rotations (5 to 7 full 360° spins = 1800° to 2520°)
-    const fullSpins = 5 + Math.floor(Math.random() * 3);
+    // Strict 4 full 360° revolutions (4 * 360 = 1440°) + blind unknown target angle
+    const fullSpins = 4;
     const currentMod = wheelRotation % 360;
     let delta = targetModAngle - currentMod;
     if (delta < 0) delta += 360;
@@ -1792,42 +2118,119 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
     const finalAngle = wheelRotation + fullSpins * 360 + delta;
     setWheelRotation(finalAngle);
 
-    // Faster spin: 2.4 seconds total duration
-    const spinDuration = 2400; // 2.4 seconds
-    const startTime = Date.now();
-    let lastTickAngle = wheelRotation;
+    // Pre-sample secret Aviator crash-lock multiplier unknowingly (hidden until 4th 360° turn stops!)
+    const targetMultiplier = isVipOrPass
+      ? Number((1.25 + Math.pow(secureRandomFloat(), 1.55) * (subProfile.multiplierCap - 1.25)).toFixed(2))
+      : Number((1.0 + secureRandomFloat() * 0.5).toFixed(2));
 
-    if (spinTickIntervalRef.current) {
-      clearInterval(spinTickIntervalRef.current);
+    const spinDuration = 2800; // Smooth 2.8s for 4 crisp 360° turns
+    const startTs = performance.now();
+    const startAngle = wheelRotation;
+    let lastTickAngle = startAngle;
+    let prevEase = 0;
+
+    // Exact CSS cubic-bezier(0.12, 0.98, 0.22, 1) evaluator synced frame-for-frame with wheel CSS transition
+    const evalSpinEase = (tNorm: number): number => {
+      if (tNorm <= 0) return 0;
+      if (tNorm >= 1) return 1;
+      const cx1 = 0.12;
+      const cy1 = 0.98;
+      const cx2 = 0.22;
+      const cy2 = 1.0;
+      const sampleX = (u: number) => {
+        const inv = 1 - u;
+        return 3 * inv * inv * u * cx1 + 3 * inv * u * u * cx2 + u * u * u;
+      };
+      const sampleY = (u: number) => {
+        const inv = 1 - u;
+        return 3 * inv * inv * u * cy1 + 3 * inv * u * u * cy2 + u * u * u;
+      };
+      let lo = 0;
+      let hi = 1;
+      for (let iter = 0; iter < 8; iter++) {
+        const mid = 0.5 * (lo + hi);
+        if (sampleX(mid) < tNorm) lo = mid;
+        else hi = mid;
+      }
+      return sampleY(0.5 * (lo + hi));
+    };
+
+    if (spinRafRef.current !== null) {
+      cancelAnimationFrame(spinRafRef.current);
+      spinRafRef.current = null;
+    }
+    if (whirControllerRef.current) {
+      whirControllerRef.current.stop();
+      whirControllerRef.current = null;
     }
 
-    const tickInterval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
+    // Start subtle velocity-tracked mechanical whirring rotor audio & initial crisp detent click
+    whirControllerRef.current = appSoundService.startWheelWhirring();
+    playMechanicalTick(18, 0.95);
+
+    const stepSpinFrame = (nowTs: number) => {
+      const elapsed = nowTs - startTs;
       const progress = Math.min(1, elapsed / spinDuration);
+      const easeOut = evalSpinEase(progress);
+      const dtEase = Math.max(0, easeOut - prevEase);
+      prevEase = easeOut;
+      const speedNorm = Math.min(1, Math.max(0, dtEase * 24));
+      const currentSimAngle = startAngle + (finalAngle - startAngle) * easeOut;
 
-      // Smooth cubic-bezier ease out
-      const easeOut = 1 - Math.pow(1 - progress, 3.2);
-      const currentSimAngle = wheelRotation + (finalAngle - wheelRotation) * easeOut;
+      whirControllerRef.current?.updateSpeed(speedNorm);
 
-      // Realistic mechanical peg ticks
-      if (Math.abs(currentSimAngle - lastTickAngle) >= 15) {
-        lastTickAngle = currentSimAngle;
-        playMechanicalTick((Math.random() - 0.5) * 60);
+      // Update live 4-turn telemetry & climbing Aviator multiplier
+      const degTraveled = Math.max(0, currentSimAngle - startAngle);
+      setWheelTurnCount(Math.min(4, Math.floor(degTraveled / 360) + 1));
+      const climbingMult = 1 + (targetMultiplier - 1) * Math.min(1, progress * 1.04);
+      setAviatorWheelMultiplier(Number(climbingMult.toFixed(2)));
 
-        // Flapper twitch
+      // Trigger crisp detent peg-click for every 15 degrees crossed (matching the 24 rim pegs)
+      if (currentSimAngle - lastTickAngle >= 15) {
+        lastTickAngle += Math.floor((currentSimAngle - lastTickAngle) / 15) * 15;
+        playMechanicalTick((Math.random() - 0.5) * 35 - progress * 55, 0.25 + speedNorm * 0.75);
         setFlapperTwitch((prev) => (prev > 0 ? -12 : 14));
-        setTimeout(() => setFlapperTwitch(0), 30);
+        setTimeout(() => setFlapperTwitch(0), 28);
       }
 
-      if (elapsed >= spinDuration) {
-        clearInterval(tickInterval);
-        spinTickIntervalRef.current = null;
-        setFlapperTwitch(0);
-        setIsSpinning(false);
+      if (elapsed < spinDuration) {
+        spinRafRef.current = requestAnimationFrame(stepSpinFrame);
+        return;
+      }
+
+      spinRafRef.current = null;
+      if (whirControllerRef.current) {
+        whirControllerRef.current.stop();
+        whirControllerRef.current = null;
+      }
+      setFlapperTwitch(0);
+      setIsSpinning(false);
+        setWheelTurnCount(4);
+        setWheelSpinPhase('LOCKED');
+        setAviatorWheelMultiplier(targetMultiplier);
         setWinningSegmentIndex(chosenIndex);
-        const nextVipPromptIdx = Math.floor(Math.random() * chosenSegment.prompts.length);
-        setActivePromptIndex(nextVipPromptIdx);
+        setActivePromptIndex(chosenPromptIdx);
+        if (generatedFreshText) {
+          setSynthesizedWheelPrompt(generatedFreshText);
+        }
+        if (chosenKey && isVipOrPass) {
+          markActivitySeen('wheel', chosenKey);
+        }
+        if (isVipOrPass) {
+          recordWheelGamePlayed(chosenIndex, eligibleSegmentIds);
+        }
         setSyncedPartyPromptText(null);
+
+        // Kick off 3D glassmorphic flip reveal sequence: hold glass crest back for 520ms then flip 180->0 to reveal Dare
+        setDareFlipKey((prev) => prev + 1);
+        setDareFlipStage('FLIPPING_BACK');
+        if (dareFlipTimeoutRef.current) {
+          clearTimeout(dareFlipTimeoutRef.current);
+        }
+        dareFlipTimeoutRef.current = setTimeout(() => {
+          setDareFlipStage('REVEALED');
+          dareFlipTimeoutRef.current = null;
+        }, 520);
 
         const nextBasicIdx = (basicPromptCycleIdx + 1) % BASIC_SAMPLE_PROMPTS.length;
         if (!isVipOrPass) {
@@ -1840,13 +2243,13 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
         if (connectionMode === 'party_10') {
           const landedPromptText = !isVipOrPass
             ? BASIC_SAMPLE_PROMPTS[nextBasicIdx].text
-            : chosenSegment.prompts[nextVipPromptIdx] || chosenSegment.prompts[0];
+            : generatedFreshText || chosenSegment.prompts[chosenPromptIdx] || chosenSegment.prompts[0];
           lastSyncedSpinTsRef.current = Date.now();
           socketService.syncPartySpin({
             roomCode: partyRoomCode,
             segmentId: chosenIndex,
             wheelRotation: finalAngle,
-            promptIndex: isVipOrPass ? nextVipPromptIdx : nextBasicIdx,
+            promptIndex: isVipOrPass ? chosenPromptIdx : nextBasicIdx,
             promptText: landedPromptText,
             updatedBy: localPhoneName.trim() || 'Host Phone',
           });
@@ -1856,18 +2259,17 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
         ) {
           const landedPromptText = !isVipOrPass
             ? BASIC_SAMPLE_PROMPTS[nextBasicIdx].text
-            : chosenSegment.prompts[nextVipPromptIdx] || chosenSegment.prompts[0];
+            : generatedFreshText || chosenSegment.prompts[chosenPromptIdx] || chosenSegment.prompts[0];
           lastCoupleSpinTsRef.current = Date.now();
           socketService.syncCoupleSpin({
             roomCode: coupleRoomCode,
             segmentId: chosenIndex,
             wheelRotation: finalAngle,
-            promptIndex: isVipOrPass ? nextVipPromptIdx : nextBasicIdx,
+            promptIndex: isVipOrPass ? chosenPromptIdx : nextBasicIdx,
             promptText: landedPromptText,
             updatedBy: couplePartnerOneName.trim() || 'Partner',
           });
         } else {
-          // Rotate turn between Partner 1 & Partner 2 in offline Pass & Play mode
           const p1 = couplePartnerOneName.trim() || 'Alex';
           const p2 = couplePartnerTwoName.trim() || 'Aria';
           setCurrentTurnPlayer((prev) => (prev === p1 ? p2 : p1));
@@ -1884,59 +2286,149 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
         } catch {
           // ignore
         }
-      }
-    }, 20);
-    spinTickIntervalRef.current = tickInterval;
+    };
+    spinRafRef.current = requestAnimationFrame(stepSpinFrame);
   };
 
-  // Next endless prompt variation inside current winning wedge
+  // Next unseen prompt variation inside current winning wedge
   const nextPromptVariation = () => {
-    setSyncedPartyPromptText(null);
-    if (!isVipOrPass) {
-      const nextIdx = (basicPromptCycleIdx + 1) % BASIC_SAMPLE_PROMPTS.length;
-      setBasicPromptCycleIdx(nextIdx);
-      setTimerSeconds(BASIC_SAMPLE_PROMPTS[nextIdx].duration);
-    } else {
-      setActivePromptIndex((prev) => prev + 1);
-      setTimerSeconds(currentSegment.suggestedDurationSec);
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('4×360° Aviator Wheel');
+      return;
     }
+    setSyncedPartyPromptText(null);
+    setSynthesizedWheelPrompt(null);
+    const seenSet = new Set<string>(seenActivityIds.wheel || []);
+    const unseenIdx = currentSegment.prompts.findIndex((_, idx) => !seenSet.has(`wheel_${currentSegment.id}_${idx}`));
+    if (unseenIdx !== -1) {
+      setActivePromptIndex(unseenIdx);
+      markActivitySeen('wheel', `wheel_${currentSegment.id}_${unseenIdx}`);
+    } else {
+      const rank = Math.min(subProfile.maxVybeRank, SPICY_LEVEL_RANK[currentSegment.vybeLevel] ?? 2);
+      const synth = synthesizeUniqueActivity(rank, seenSet.size, seenSet);
+      setSynthesizedWheelPrompt(synth.text);
+      markActivitySeen('wheel', synth.key);
+    }
+    setTimerSeconds(currentSegment.suggestedDurationSec);
     setIsTimerRunning(false);
   };
 
-  // Complete Challenge & Award Synergy Points (2x for VIP!)
-  const handleCompleteChallenge = () => {
-    const pointsAwarded = isVipOrPass ? 150 : 75;
-    setSynergyPoints((prev) => {
-      const updated = prev + pointsAwarded;
-      try {
-        localStorage.setItem('twogether_synergy_pts', String(updated));
-      } catch {
-        // ignore
-      }
-      return updated;
-    });
-
-    if (!isVipOrPass) {
-      setBasicPlayCount((prev) => {
-        const next = prev + 1;
-        try {
-          localStorage.setItem('twogether_basic_game_plays', String(next));
-        } catch {}
-        return next;
-      });
+  // Complete Challenge Celebration (Requires Paid Subscription)
+  const handleCompleteChallenge = (_bonusMultiplier = 1) => {
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Couples Arcade');
+      return;
     }
 
     playWinChime();
     try {
       confetti({
-        particleCount: isVipOrPass ? 90 : 60,
+        particleCount: 90,
         spread: 90,
         origin: { y: 0.55 },
-        colors: isVipOrPass ? ['#fbbf24', '#f59e0b', '#ec4899', '#a855f7'] : ['#10b981', '#fbbf24', '#ec4899'],
+        colors: ['#fbbf24', '#f59e0b', '#ec4899', '#a855f7'],
       });
     } catch {
       // ignore
     }
+  };
+
+  // -------------------------------------------------------------
+  // AVIATOR HEAT CRASH DARES GAME ENGINE (TAB 6)
+  // -------------------------------------------------------------
+  const getHeatLabelForMultiplier = (mult: number, maxRank: number): { rank: number; label: string } => {
+    const bands = [
+      { rank: 0, label: '🌸 Mild Warmup' },
+      { rank: 1, label: '🌶️ Spicy Tease' },
+      { rank: 2, label: '🌶️🔥 More Spicy' },
+      { rank: 3, label: '🌶️🌶️🔥 Most Spicy' },
+      { rank: 4, label: '🔥 Hot Seduction' },
+      { rank: 5, label: '🔥💋 Extra Hot' },
+      { rank: 6, label: '💥 Extremely Hot Nasty' },
+    ];
+    const desiredRank = mult < 1.35 ? 0 : mult < 1.85 ? 1 : mult < 2.5 ? 2 : mult < 3.4 ? 3 : mult < 5.0 ? 4 : mult < 7.5 ? 5 : 6;
+    const cappedRank = Math.min(maxRank, desiredRank);
+    return bands[cappedRank] || bands[0];
+  };
+
+  const assignCrashOrLockedDare = (mult: number, wasCrash: boolean) => {
+    const band = getHeatLabelForMultiplier(
+      wasCrash ? Math.max(mult, 2.2) : mult,
+      subProfile.maxVybeRank
+    );
+    const seenAviator = new Set<string>(seenActivityIds.aviator || []);
+    const synth = synthesizeUniqueActivity(
+      wasCrash ? Math.min(subProfile.maxVybeRank, Math.max(1, band.rank + 1)) : band.rank,
+      seenAviator.size + Math.floor(mult * 100),
+      seenAviator
+    );
+    markActivitySeen('aviator', synth.key);
+    setCrashResultDare({
+      title: wasCrash ? `✈️ Flew Away Penalty (${mult.toFixed(2)}x Crash!)` : `✅ Locked Heat Dare @ ${mult.toFixed(2)}x`,
+      text: synth.text,
+      benefit: synth.benefit,
+      vybeLabel: band.label,
+      wonMultiplier: mult,
+      wasCrashPenalty: wasCrash,
+    });
+  };
+
+  const startHeatFlight = () => {
+    if (crashFlightState === 'FLYING') return;
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Aviator Heat Crash');
+      return;
+    }
+
+    const cap = subProfile.multiplierCap;
+    // Heavy-tailed Aviator random crash formula (1.12x up to subscription multiplierCap)
+    const u = secureRandomFloat();
+    const rawCrash = 1.12 + Math.pow(u, 1.8) * (cap - 1.12);
+    secretCrashPointRef.current = Number(Math.max(1.15, Math.min(cap, rawCrash)).toFixed(2));
+    crashStartTsRef.current = performance.now();
+    setCrashResultDare(null);
+    setCrashMultiplier(1.0);
+    setCrashHeatLabel('🌸 Mild Warmup');
+    setCrashFlightState('FLYING');
+
+    let lastSoundMult = 1.0;
+
+    const step = (now: number) => {
+      const elapsedSec = (now - crashStartTsRef.current) / 1000;
+      const currentMult = Number(Math.pow(1.28, elapsedSec).toFixed(2));
+      const band = getHeatLabelForMultiplier(currentMult, subProfile.maxVybeRank);
+
+      if (currentMult >= secretCrashPointRef.current) {
+        setCrashMultiplier(secretCrashPointRef.current);
+        setCrashHeatLabel(band.label);
+        setCrashFlightState('CRASHED');
+        playMechanicalTick(-180);
+        assignCrashOrLockedDare(secretCrashPointRef.current, true);
+        crashRafRef.current = null;
+        return;
+      }
+
+      setCrashMultiplier(currentMult);
+      setCrashHeatLabel(band.label);
+      if (currentMult - lastSoundMult >= 0.28) {
+        lastSoundMult = currentMult;
+        playMechanicalTick(Math.min(350, (currentMult - 1) * 75));
+      }
+      crashRafRef.current = requestAnimationFrame(step);
+    };
+
+    crashRafRef.current = requestAnimationFrame(step);
+  };
+
+  const lockHeatDare = () => {
+    if (crashFlightState !== 'FLYING') return;
+    if (crashRafRef.current !== null) {
+      cancelAnimationFrame(crashRafRef.current);
+      crashRafRef.current = null;
+    }
+    setCrashFlightState('LOCKED');
+    playWinChime();
+    assignCrashOrLockedDare(crashMultiplier, false);
   };
 
   // Countdown timer logic
@@ -1962,67 +2454,97 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
   }, [isTimerRunning, playWinChime]);
 
   // -------------------------------------------------------------
-  // CARDS DECK STATE & LOGIC (SUBSCRIPTION & BASIC 5-SAMPLE LOOP)
+  // CARDS DECK STATE & LOGIC (ZERO-REPEAT + SUBSCRIPTION SCALED)
   // -------------------------------------------------------------
   const [deckCardIndex, setDeckCardIndex] = useState<number>(0);
   const [cardDeckIntensity, setCardDeckIntensity] = useState<'all' | 'spicy' | 'golden'>('all');
 
-  const filteredCards = ENDLESS_CARDS_DECK.filter((c) => {
+  const combinedCardsDeck = [...ENDLESS_CARDS_DECK, ...synthesizedCards];
+  const filteredCards = combinedCardsDeck.filter((c) => {
     if (!isVipOrPass) {
       return c.vybeLevel === 'mild';
     }
+    const cRank = SPICY_LEVEL_RANK[c.vybeLevel] ?? 0;
+    if (cRank > subProfile.maxVybeRank) return false;
     if (intensityFilter !== 'all') {
       return c.vybeLevel === intensityFilter;
     }
     if (cardDeckIntensity === 'golden') return c.category.includes('Golden');
     if (cardDeckIntensity === 'spicy') return c.intensity === 'Very Naughty & Healthy';
     return true;
-  }).slice(0, !isVipOrPass ? 5 : ENDLESS_CARDS_DECK.length);
+  }).slice(0, !isVipOrPass ? 5 : combinedCardsDeck.length);
 
   const activeCard =
     filteredCards.length > 0
       ? filteredCards[deckCardIndex % filteredCards.length] || filteredCards[0]
       : ENDLESS_CARDS_DECK[3];
 
-  const handleNextCard = () => {
-    if (isBasicLimitReached) {
-      if (onOpenUpgradeModal) {
-        onOpenUpgradeModal(
-          'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Truth & Dare Spicy Cards Throughout via Google Pay ($0.99 / $5.99)!'
-        );
-      }
+  const drawUnseenOrSynthesizeCard = () => {
+    const seenCards = new Set<string>(seenActivityIds.cards || []);
+    if (!isVipOrPass) {
+      setDeckCardIndex((prev) => (prev + 1) % Math.max(1, filteredCards.length));
       return;
     }
-    if (filteredCards.length === 0) return;
-    setDeckCardIndex((prev) => (prev + 1) % filteredCards.length);
+    const unseenIdx = filteredCards.findIndex((c) => !seenCards.has(`card_${c.id}`));
+    if (unseenIdx !== -1) {
+      markActivitySeen('cards', `card_${filteredCards[unseenIdx].id}`);
+      setDeckCardIndex(unseenIdx);
+      return;
+    }
+    // Every curated card seen -> synthesize brand-new unique card!
+    const targetVybe: SpicyVybeLevel =
+      intensityFilter !== 'all'
+        ? intensityFilter
+        : (['spicy', 'more_spicy', 'most_spicy', 'hot', 'extra_hot', 'extremely_hot'].find(
+            (lvl) => (SPICY_LEVEL_RANK[lvl as SpicyVybeLevel] ?? 0) === subProfile.maxVybeRank
+          ) as SpicyVybeLevel) || 'spicy';
+    const synthRank = Math.min(subProfile.maxVybeRank, SPICY_LEVEL_RANK[targetVybe] ?? 1);
+    const synth = synthesizeUniqueActivity(
+      synthRank,
+      seenCards.size + synthesizedCards.length,
+      seenCards,
+      secureRandomFloat() > 0.5 ? 'Partner 1' : 'Partner 2'
+    );
+    const newCardId = 1000 + synthesizedCards.length + Math.floor(secureRandomFloat() * 900);
+    const newCard: CardDeckItem = {
+      id: newCardId,
+      category: synthRank >= 4 ? 'Midnight Desire' : 'Wild Dare',
+      icon: synthRank >= 5 ? '💥' : '🔥',
+      forWhom: secureRandomFloat() > 0.5 ? 'Both Partners' : 'Partner Turn',
+      cardPrompt: synth.text,
+      intensity: synthRank >= 2 ? 'Very Naughty & Healthy' : 'Spicy',
+      vybeLevel: targetVybe,
+    };
+    markActivitySeen('cards', `card_${newCardId}`);
+    setSynthesizedCards((prev) => [...prev, newCard]);
+    setDeckCardIndex(filteredCards.length);
+  };
+
+  const handleNextCard = () => {
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Endless Truth & Dare Cards');
+      return;
+    }
+    drawUnseenOrSynthesizeCard();
   };
   const handlePrevCard = () => {
-    if (isBasicLimitReached) {
-      if (onOpenUpgradeModal) {
-        onOpenUpgradeModal(
-          'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Truth & Dare Spicy Cards Throughout via Google Pay ($0.99 / $5.99)!'
-        );
-      }
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Endless Truth & Dare Cards');
       return;
     }
     if (filteredCards.length === 0) return;
     setDeckCardIndex((prev) => (prev - 1 + filteredCards.length) % filteredCards.length);
   };
   const handleShuffleDeck = () => {
-    if (isBasicLimitReached) {
-      if (onOpenUpgradeModal) {
-        onOpenUpgradeModal(
-          'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Truth & Dare Spicy Cards Throughout via Google Pay ($0.99 / $5.99)!'
-        );
-      }
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Endless Truth & Dare Cards');
       return;
     }
-    if (filteredCards.length === 0) return;
-    setDeckCardIndex(Math.floor(Math.random() * filteredCards.length));
+    drawUnseenOrSynthesizeCard();
   };
 
   // -------------------------------------------------------------
-  // NAUGHTY CRAVING DICE STATE & LOGIC (SUBSCRIPTION GATED)
+  // NAUGHTY CRAVING DICE STATE & LOGIC (ZERO-REPEAT + SUBSCRIPTION GATED)
   // -------------------------------------------------------------
   const [diceAction, setDiceAction] = useState<string>(() =>
     isVipOrPass ? 'Slow Sensual Kiss' : MILD_DICE_ACTIONS[0]
@@ -2036,20 +2558,17 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
   const rollNaughtyDice = () => {
     if (isRollingDice) return;
 
-    if (isBasicLimitReached) {
-      if (onOpenUpgradeModal) {
-        onOpenUpgradeModal(
-          'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Spicy Craving Dice Throughout via Google Pay ($0.99 / $5.99)!'
-        );
-      }
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Craving Dice');
       return;
     }
 
     const tierMeta = SPICY_VYBE_TIERS.find((t) => t.id === intensityFilter);
-    if (tierMeta?.isSubscriptionOnly && !isVipOrPass) {
+    const tierRank = SPICY_LEVEL_RANK[intensityFilter] ?? 0;
+    if (tierMeta?.isSubscriptionOnly && (!isVipOrPass || tierRank > subProfile.maxVybeRank)) {
       if (onOpenUpgradeModal) {
         onOpenUpgradeModal(
-          `Unlock ${tierMeta.label} Craving Dice ($0.99 1-Day Pass or $5.99 VIP via Google Pay) for endless uncapped passion rolls throughout!`
+          `Your current plan covers ${subProfile.maxHeatLabel}. Upgrade ($3.50 Weekly / $14.50 VIP) to unlock ${tierMeta.label} Craving Dice!`
         );
       }
       return;
@@ -2064,6 +2583,25 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
       ? MILD_DICE_LOCATIONS
       : DICE_LOCATIONS_BY_VYBE[intensityFilter] || DICE_LOCATIONS;
 
+    // Pick unseen action + location pairing when subscribed
+    const seenDice = new Set<string>(seenActivityIds.dice || []);
+    const allPairs: Array<{ act: string; loc: string; key: string }> = [];
+    activeActionPool.forEach((act) => {
+      activeLocationPool.forEach((loc) => {
+        const key = `${act}::${loc}`;
+        if (!seenDice.has(key)) allPairs.push({ act, loc, key });
+      });
+    });
+
+    const chosenPair =
+      allPairs.length > 0
+        ? allPairs[Math.floor(secureRandomFloat() * allPairs.length)]
+        : {
+            act: activeActionPool[Math.floor(secureRandomFloat() * activeActionPool.length)],
+            loc: activeLocationPool[Math.floor(secureRandomFloat() * activeLocationPool.length)],
+            key: `combo_${Date.now()}`,
+          };
+
     let rollStep = 0;
     const interval = setInterval(() => {
       setDiceAction(activeActionPool[Math.floor(Math.random() * activeActionPool.length)]);
@@ -2072,6 +2610,11 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
       rollStep++;
       if (rollStep > 12) {
         clearInterval(interval);
+        setDiceAction(chosenPair.act);
+        setDiceLocation(chosenPair.loc);
+        if (isVipOrPass) {
+          markActivitySeen('dice', chosenPair.key);
+        }
         setIsRollingDice(false);
         setDiceRollCount((prev) => prev + 1);
         playWinChime();
@@ -2105,6 +2648,8 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
     if (!isVipOrPass) {
       return vc.vybeLevel === 'mild';
     }
+    const vcRank = SPICY_LEVEL_RANK[vc.vybeLevel] ?? 0;
+    if (vcRank > subProfile.maxVybeRank) return false;
     if (intensityFilter !== 'all') {
       return vc.vybeLevel === intensityFilter;
     }
@@ -2154,6 +2699,10 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
   }, []);
 
   const handleToggleFinger = (idx: number) => {
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Put A Finger Down');
+      return;
+    }
     setFingersUp((prev) => {
       const next = [...prev];
       next[idx] = !next[idx];
@@ -2163,17 +2712,17 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
   };
 
   const handleResetFingers = () => {
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Put A Finger Down');
+      return;
+    }
     setFingersUp(Array(10).fill(true));
     setFingerQuestionIdx(0);
   };
 
   const handleNextFingerQuestion = () => {
-    if (isBasicLimitReached) {
-      if (onOpenUpgradeModal) {
-        onOpenUpgradeModal(
-          'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Put A Finger Down & Spicy Confessions via Google Pay ($0.99 / $5.99)!'
-        );
-      }
+    if (requiresPaidSubscription) {
+      openSubscriptionPaywall('Put A Finger Down');
       return;
     }
     setFingerQuestionIdx((prev) => (prev + 1) % visibleFingerQuestions.length);
@@ -2184,7 +2733,7 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
     if (!isVipOrPass) {
       if (onOpenUpgradeModal) {
         onOpenUpgradeModal(
-          'Unlock the AI Tastier Viral Challenge Generator & All 6 Spicy Vybe Levels ($0.99 1-Day Pass or $5.99 VIP via Google Pay)!'
+          'Unlock the AI Tastier Viral Challenge Generator & All 6 Spicy Vybe Levels ($1.00 1-Day Pass or $14.50 VIP via Google Pay)!'
         );
       }
       playMechanicalTick(60);
@@ -2229,10 +2778,9 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
         rules: [
           'Set phone camera upright or play in real-time in front of each other.',
           'Execute the challenge with full emotional energy and eye contact.',
-          'Award yourselves +150 VIP Synergy PTS upon completion!',
+          'Celebrate your victory together with a lingering kiss upon completion!',
         ],
         trendingSoundtrack: 'Lagos to Tokyo Viral Sound • 122 BPM',
-        rewardPoints: 150,
       };
 
       setViralChallenges((prev) => [newChallenge, ...prev]);
@@ -2253,12 +2801,71 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
     }, 450);
   };
 
+  const advanceViralNonRepeating = (mode: 'next' | 'random') => {
+    if (!isVipOrPass) {
+      const nextIdx =
+        mode === 'random'
+          ? Math.floor(secureRandomFloat() * activeViralPool.length)
+          : (activeViralIndex + 1) % activeViralPool.length;
+      setActiveViralIndex(nextIdx);
+      playMechanicalTick(40);
+      return;
+    }
+
+    const seenViral = new Set<string>(seenActivityIds.viral || []);
+    const unseenIndices = activeViralPool
+      .map((item, idx) => (!seenViral.has(item.id) ? idx : -1))
+      .filter((idx) => idx !== -1);
+
+    if (unseenIndices.length > 0) {
+      const pickedIdx =
+        mode === 'random'
+          ? unseenIndices[Math.floor(secureRandomFloat() * unseenIndices.length)]
+          : unseenIndices[0];
+      markActivitySeen('viral', activeViralPool[pickedIdx].id);
+      setActiveViralIndex(pickedIdx);
+      playMechanicalTick(45);
+      return;
+    }
+
+    // All curated viral challenges played -> synthesize a zero-repeat viral quest within chosen subscription rank
+    const targetVybe: SpicyVybeLevel =
+      intensityFilter !== 'all' && intensityFilter !== 'mild'
+        ? intensityFilter
+        : subProfile.maxVybeRank >= 5
+        ? 'extra_hot'
+        : subProfile.maxVybeRank >= 4
+        ? 'hot'
+        : 'spicy';
+    const synthRank = Math.min(subProfile.maxVybeRank, SPICY_LEVEL_RANK[targetVybe] ?? 1);
+    const synth = synthesizeUniqueActivity(synthRank, seenViral.size + viralChallenges.length, seenViral);
+    const freshId = `synth_vc_${Date.now()}_${viralChallenges.length}`;
+    const freshViral: ViralSocialChallengeItem = {
+      id: freshId,
+      title: `Fresh Zero-Repeat Viral Quest #${viralChallenges.length + 1}`,
+      hashtag: '#TwogetherEndless #ZeroRepeatVibe #CouplesTrend',
+      platform: 'TikTok & Reels Endless',
+      vibe: `${subProfile.maxHeatLabel}`,
+      vybeLevel: targetVybe,
+      setup: synth.text,
+      rules: [
+        'Guaranteed fresh zero-repeat challenge unlocked by your subscription.',
+        'Frame together or play face-to-face for maximum eye-contact chemistry.',
+        'Celebrate together with an unbroken 5-second hug & kiss upon completion!',
+      ],
+      trendingSoundtrack: 'Midnight Velvet Couple Drop · 118 BPM',
+    };
+    markActivitySeen('viral', freshId);
+    setViralChallenges((prev) => [freshViral, ...prev]);
+    setActiveViralIndex(0);
+    playWinChime();
+  };
+
   // -------------------------------------------------------------
-  // WHO KNOWS ME BEST ENDLESS QUIZ (MILD 5-SAMPLE LOOP vs VIP SPICY)
+  // WHO KNOWS ME BEST ENDLESS QUIZ (PAID SUBSCRIPTION REQUIRED)
   // -------------------------------------------------------------
   const [quizQuestionIndex, setQuizQuestionIndex] = useState<number>(0);
   const [quizSelectedAnswer, setQuizSelectedAnswer] = useState<number | null>(null);
-  const [, setQuizScore] = useState<number>(0);
 
   const BASIC_QUIZ_QUESTIONS = [
     {
@@ -2398,21 +3005,79 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
     },
   ];
 
-  const ALL_VIP_QUIZ_POOL = [...VIP_QUIZ_QUESTIONS, ...BASIC_QUIZ_QUESTIONS];
+  const [synthesizedQuizQuestions, setSynthesizedQuizQuestions] = useState<typeof BASIC_QUIZ_QUESTIONS>([]);
+
+  const ALL_VIP_QUIZ_POOL = [...VIP_QUIZ_QUESTIONS, ...BASIC_QUIZ_QUESTIONS, ...synthesizedQuizQuestions];
+  const planScopedQuiz = ALL_VIP_QUIZ_POOL.filter(
+    (q) => (SPICY_LEVEL_RANK[q.vybeLevel] ?? 0) <= subProfile.maxVybeRank
+  );
   const filteredVipQuiz =
     intensityFilter === 'all'
-      ? ALL_VIP_QUIZ_POOL
-      : ALL_VIP_QUIZ_POOL.filter((q) => q.vybeLevel === intensityFilter);
+      ? planScopedQuiz
+      : planScopedQuiz.filter((q) => q.vybeLevel === intensityFilter);
   const activeQuizPool = !isVipOrPass
     ? BASIC_QUIZ_QUESTIONS
     : filteredVipQuiz.length > 0
     ? filteredVipQuiz
-    : ALL_VIP_QUIZ_POOL;
+    : planScopedQuiz;
 
   const currentQuiz = activeQuizPool[quizQuestionIndex % activeQuizPool.length] || BASIC_QUIZ_QUESTIONS[0];
 
-  // Shared Spin-the-Wheel–Style Subscription Helpers for All Game Tabs
-  const renderSubscriptionBanner = (modeBasicText: string, modeVipText: string) =>
+  const advanceQuizNonRepeating = () => {
+    if (!isVipOrPass) {
+      setQuizQuestionIndex((prev) => (prev + 1) % BASIC_QUIZ_QUESTIONS.length);
+      setQuizSelectedAnswer(null);
+      return;
+    }
+
+    const seenQuiz = new Set<string>(seenActivityIds.quiz || []);
+    const unseenIdx = activeQuizPool.findIndex((q) => !seenQuiz.has(`quiz_${q.q.slice(0, 48)}`));
+    if (unseenIdx !== -1) {
+      markActivitySeen('quiz', `quiz_${activeQuizPool[unseenIdx].q.slice(0, 48)}`);
+      setQuizQuestionIndex(unseenIdx);
+      setQuizSelectedAnswer(null);
+      return;
+    }
+
+    // All curated questions seen -> synthesize a fresh zero-repeat quiz prompt scaled to chosen plan!
+    const targetVybe: SpicyVybeLevel =
+      intensityFilter !== 'all'
+        ? intensityFilter
+        : subProfile.maxVybeRank >= 6
+        ? 'extremely_hot'
+        : subProfile.maxVybeRank >= 4
+        ? 'hot'
+        : 'spicy';
+    const synthRank = Math.min(subProfile.maxVybeRank, SPICY_LEVEL_RANK[targetVybe] ?? 1);
+    const synth = synthesizeUniqueActivity(synthRank, seenQuiz.size + synthesizedQuizQuestions.length, seenQuiz);
+    const freshQuestion = {
+      vybeLevel: targetVybe,
+      q: `Midnight Attunement Check #${seenQuiz.size + 1}: Which surprise moment would make me melt immediately tonight?`,
+      options: [
+        synth.text,
+        'Unbroken 60-second forehead-to-forehead breathing followed by a whispered confession',
+        'A slow candlelight shoulder & neck massage with zero phones in the room',
+        'Pulling me close and letting me take full lead for the next 2 minutes',
+      ],
+      correct: 0,
+      expl: synth.benefit,
+    };
+    markActivitySeen('quiz', `quiz_${freshQuestion.q.slice(0, 48)}`);
+    setSynthesizedQuizQuestions((prev) => [...prev, freshQuestion]);
+    setQuizQuestionIndex(activeQuizPool.length);
+    setQuizSelectedAnswer(null);
+  };
+
+  const totalSeenAcrossGames =
+    (seenActivityIds.wheel?.length || 0) +
+    (seenActivityIds.cards?.length || 0) +
+    (seenActivityIds.viral?.length || 0) +
+    (seenActivityIds.dice?.length || 0) +
+    (seenActivityIds.quiz?.length || 0) +
+    (seenActivityIds.aviator?.length || 0);
+
+  // Shared Subscription Banner & Zero-Repeat Vault Header for All Game Tabs
+  const renderSubscriptionBanner = (_modeBasicText: string, modeVipText: string) =>
     isVipOrPass ? (
       <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-pink-500/20 to-purple-500/20 border-2 border-amber-400/50 flex flex-wrap items-center justify-between gap-3 text-left shadow-xl shadow-amber-500/10">
         <div className="flex items-center gap-2.5">
@@ -2422,22 +3087,38 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-black text-amber-300 font-mono tracking-wide">
-                👑 VIP PREMIUM SUBSCRIPTION ACTIVE: ENDLESS SPICY THROUGHOUT
+                {subProfile.tierLabel.toUpperCase()} ACTIVE
               </span>
-              <span className="px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-200 border border-amber-400/40 text-[10px] font-mono font-bold">
-                2x PTS BONUS (+150 PTS)
+              <span className="text-[11px] font-mono text-amber-100/90 tabular-nums">
+                · 0 Repeats ({totalSeenAcrossGames} Fresh Played)
               </span>
             </div>
             <p className="text-[11px] text-zinc-300 font-sans">
-              {modeVipText}
+              Ceiling: <strong className="text-white">{subProfile.maxHeatLabel}</strong> · {modeVipText}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {subProfile.maxVybeRank < 6 && onOpenUpgradeModal && (
+            <button
+              onClick={() => onOpenUpgradeModal(subProfile.nextUpgradeHint)}
+              className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-black font-mono text-xs font-black shadow-md flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap"
+            >
+              <Crown className="w-3.5 h-3.5 fill-black" />
+              <span>Unlock Full Extreme</span>
+            </button>
+          )}
+          <button
+            onClick={() => handleResetSeenVault()}
+            className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-zinc-200 font-mono text-[11px] font-bold transition-all cursor-pointer whitespace-nowrap"
+            title="Reset played history if you want to replay favorites"
+          >
+            Reset Vault
+          </button>
           <button
             onClick={() => setShowAiSpicyGenerator(true)}
-            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-400 hover:to-purple-500 text-white font-mono text-xs font-extrabold shadow-md flex items-center gap-1.5 transition-all cursor-pointer"
+            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-400 hover:to-purple-500 text-white font-mono text-xs font-extrabold shadow-md flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
             title="Generate instant AI spicy challenge"
           >
             <Sparkles className="w-3.5 h-3.5 text-amber-300" />
@@ -2445,7 +3126,7 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
           </button>
           <button
             onClick={() => setShowCustomDareModal(true)}
-            className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-zinc-200 font-mono text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+            className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-zinc-200 font-mono text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
             title="Send custom dare to your partner"
           >
             <span>✍️ Custom Dare</span>
@@ -2453,131 +3134,76 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
         </div>
       </div>
     ) : (
-      <div className="p-3 rounded-2xl bg-white/5 border border-white/10 flex flex-wrap items-center justify-between gap-3 text-left">
+      <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-400/40 flex flex-wrap items-center justify-between gap-3 text-left">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 flex items-center justify-center font-bold text-xs shrink-0">
-            <span>🟢</span>
+          <div className="w-8 h-8 rounded-xl bg-amber-400/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+            <Lock className="w-4 h-4" />
           </div>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs font-bold text-emerald-300 font-mono">
-                {modeBasicText}
+              <span className="text-xs font-black text-amber-300 font-mono">
+                UNLOCK THIS GAME OR BUNDLE ALL 8
               </span>
-              <span className="px-2 py-0.5 rounded-full bg-white/10 text-zinc-300 text-[10px] font-mono">
-                {Math.max(0, 5 - basicPlayCount)}/5 daily plays left
+              <span className="text-[11px] font-mono text-zinc-300 tabular-nums">
+                · From $0.14/game (1-Day) · $1.00 All 8 (1-Day) · $3.50 Wk · $7.00 Bi-Wk · $14.50 Mo · $99.50 Yr
               </span>
             </div>
             <p className="text-[11px] text-zinc-400">
-              Basic experience repeats mild sample prompts and rests near 2h so next day brings more vybe. VIP unlocks endless throughout!
+              Pay for just this game now ($0.14+), sum multiple games, or Pay Once for All 8 via Google Pay.
             </p>
           </div>
         </div>
 
         {onOpenUpgradeModal && (
           <button
-            onClick={() =>
-              onOpenUpgradeModal(
-                'Unlock Endless Spicy, More Spicy, Hot, Extra Hot & Extremely Hot Vybes Throughout via Google Pay ($0.99 / $5.99)!'
-              )
-            }
-            className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-400 text-black font-mono font-black text-xs shadow-lg hover:scale-105 transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+            onClick={() => openSubscriptionPaywall(undefined, [activeGameTab])}
+            className="px-4 py-2 min-h-[40px] rounded-xl bg-gradient-to-r from-amber-400 to-yellow-400 text-black font-mono font-black text-xs shadow-lg hover:scale-105 transition-all flex items-center gap-1.5 cursor-pointer shrink-0 whitespace-nowrap"
           >
             <Crown className="w-3.5 h-3.5 fill-black" />
-            <span>Unlock VIP ($0.99 / $5.99)</span>
+            <span>Pay This Game ($0.14+) or Bundle</span>
           </button>
         )}
       </div>
     );
 
   const renderBasicLimitGate = () =>
-    isBasicLimitReached ? (
-      <div className="p-5 rounded-3xl bg-gradient-to-b from-indigo-950/80 via-purple-950/80 to-[#120f20] border-2 border-pink-500/60 shadow-2xl text-center space-y-4 relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-48 h-48 bg-pink-500/10 rounded-full blur-2xl pointer-events-none" />
-        <div className="w-14 h-14 mx-auto rounded-full bg-gradient-to-tr from-purple-600 to-pink-500 p-0.5 shadow-xl flex items-center justify-center">
-          <div className="w-full h-full bg-[#151025] rounded-full flex items-center justify-center text-2xl">
-            🌙
+    requiresPaidSubscription ? (
+      <div className="p-3.5 rounded-2xl bg-gradient-to-r from-indigo-950/80 via-purple-950/75 to-[#120f20] border border-amber-400/45 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left">
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-2 text-xs font-mono font-black text-amber-300">
+            <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span>Preview Mode · Paid Subscription Required to Play ($1.00 – $99.50)</span>
           </div>
-        </div>
-
-        <div className="space-y-1.5 max-w-lg mx-auto">
-          <span className="px-3 py-1 rounded-full bg-pink-500/20 border border-pink-400/40 text-pink-300 text-xs font-mono font-extrabold uppercase tracking-wider">
-            Basic Daily Allowance Concluded
-          </span>
-          <h3 className="text-xl sm:text-2xl font-black text-white">
-            Basic Energy Rested Until Tomorrow
-          </h3>
-          <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed font-sans">
-            You’ve played through your <strong>5 free basic plays (or ~2 hours intimacy session)</strong> for today! Content is resting until tomorrow so it brings more fresh vybe next day.
+          <p className="text-[11px] text-zinc-300 font-sans">
+            Inspect the game below before choosing a plan: $1.00 Day (Most Spicy · 3.5x) · $3.50 Weekly (Extra Hot · 6.5x) · $14.50 VIP (All 6 Tiers · 12.0x).
           </p>
         </div>
 
-        <div className="p-3 rounded-2xl bg-black/40 border border-white/10 max-w-md mx-auto flex items-center justify-around text-xs font-mono">
-          <div>
-            <span className="text-zinc-500 block text-[10px]">Today&apos;s Plays</span>
-            <strong className="text-amber-300 font-bold">{basicPlayCount} / 5 Plays</strong>
-          </div>
-          <div className="w-px h-8 bg-white/10" />
-          <div>
-            <span className="text-zinc-500 block text-[10px]">Session Time</span>
-            <strong className="text-cyan-300 font-bold">~{elapsedMinutes} mins (~2 hrs)</strong>
-          </div>
-          <div className="w-px h-8 bg-white/10" />
-          <div>
-            <span className="text-zinc-500 block text-[10px]">Energy Refresh</span>
-            <strong className="text-emerald-300 font-bold">Tomorrow 00:00 🔋</strong>
-          </div>
-        </div>
-
-        <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-pink-500/15 to-purple-500/15 border border-amber-400/40 max-w-lg mx-auto space-y-2 text-left">
-          <div className="flex items-center gap-2">
-            <Crown className="w-4 h-4 text-amber-400 flex-shrink-0" />
-            <span className="text-xs font-bold text-amber-300 font-mono">
-              Don&apos;t want the vybe to end tonight?
-            </span>
-          </div>
-          <p className="text-xs text-zinc-200 leading-relaxed font-sans">
-            VIP subscription is completely <strong>endless throughout 24/7</strong> with zero repetition or 2-hour limits! Unlocks all spicy levels: <strong>Spicy 🌶️, More Spicy 🌶️🔥, Most Spicy 🌶️🌶️🔥, Hot 🔥, Extra Hot 🔥💋 & Extremely Hot 💥🫦</strong> plus 2x Synergy Points!
-          </p>
-          <div className="pt-2 flex flex-col sm:flex-row items-center gap-2.5">
-            {onOpenUpgradeModal && (
-              <button
-                onClick={() =>
-                  onOpenUpgradeModal(
-                    'Unlock Endless Spicy, More Spicy, Hot, Extra Hot & Extremely Hot Vybes Throughout via Google Pay ($0.99 / $5.99)!'
-                  )
-                }
-                className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 text-black font-mono font-black text-xs shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Crown className="w-4 h-4 fill-black" />
-                <span>Unlock VIP with Google Pay ($0.99 / $5.99)</span>
-              </button>
-            )}
-            <button
-              onClick={() => setShowVipPreviewDrawer(true)}
-              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-zinc-300 text-xs font-mono font-bold transition-all cursor-pointer"
-            >
-              👀 Preview VIP Endless Spectrum
-            </button>
-          </div>
-        </div>
+        <button
+          onClick={() => setShowVipPreviewDrawer(true)}
+          className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-zinc-100 text-[11px] font-mono font-bold transition-all cursor-pointer whitespace-nowrap shrink-0"
+        >
+          Compare All 6 Plans
+        </button>
       </div>
     ) : null;
 
   const renderSpicyVybeTierBar = (contextLabel: string) => (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-1.5">
         <span className="text-zinc-400 font-bold text-xs font-mono flex items-center gap-1.5">
           <Flame className="w-4 h-4 text-pink-400" /> {contextLabel}:
         </span>
-        <span className="text-[11px] font-mono text-zinc-400">
-          {isVipOrPass ? '👑 All VIP Vybes Unlocked Endless' : '🔒 Basic: Mild Romance Only'}
+        <span className="text-[11px] font-mono text-zinc-300">
+          {isVipOrPass ? `Unlocked Ceiling: ${subProfile.maxHeatLabel}` : 'Locked — Paid Subscription Required'}
         </span>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5 text-xs font-mono">
         {SPICY_VYBE_TIERS.map((tier) => {
-          const isActive = intensityFilter === tier.id;
-          const isLocked = tier.isSubscriptionOnly && !isVipOrPass;
+          const isActive = isVipOrPass && intensityFilter === tier.id;
+          const tierRank = SPICY_LEVEL_RANK[tier.id] ?? 0;
+          const isLocked = !isVipOrPass || (tier.isSubscriptionOnly && tierRank > subProfile.maxVybeRank);
 
           return (
             <button
@@ -2585,8 +3211,14 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
               onClick={() => {
                 if (isLocked) {
                   if (onOpenUpgradeModal) {
+                    const neededPlan =
+                      tierRank >= 6
+                        ? 'Monthly/Annual VIP ($14.50+)'
+                        : tierRank >= 4
+                        ? 'Weekly VIP ($3.50+)'
+                        : '1-Day Pass ($1.00+)';
                     onOpenUpgradeModal(
-                      `Unlock ${tier.label} ($0.99 1-Day Pass or $5.99 VIP via Google Pay) for endless uncapped vybes throughout!`
+                      `Unlock ${tier.label} with ${neededPlan} via Google Pay for endless non-repeating vybes!`
                     );
                   }
                   playMechanicalTick(60);
@@ -2606,12 +3238,12 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
             >
               {isLocked && (
                 <span className="absolute -top-1.5 -right-1 px-1.5 py-0.2 rounded-full bg-amber-400 text-black font-black text-[9px] flex items-center gap-0.5 shadow">
-                  <Lock className="w-2.5 h-2.5" /> VIP
+                  <Lock className="w-2.5 h-2.5" /> {tierRank >= 6 ? 'VIP' : tierRank >= 4 ? 'WK+' : 'PAID'}
                 </span>
               )}
 
               <span className="text-base sm:text-lg">{tier.icon}</span>
-              <span className="text-[10.5px] leading-tight font-extrabold truncate w-full">
+              <span className="text-[10.5px] leading-tight font-extrabold truncate w-full whitespace-nowrap">
                 {tier.shortLabel}
               </span>
             </button>
@@ -2663,7 +3295,7 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
             </div>
           </div>
 
-          {/* Couples-Only Portal Quick Trigger & Synergy Points Badge */}
+          {/* Couples-Only Portal Quick Trigger */}
           <div className="flex items-center gap-2 flex-wrap self-end sm:self-center relative z-10">
             <button
               type="button"
@@ -2683,11 +3315,6 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
               <Share2 className="w-3.5 h-3.5" />
               <span>Couples Share Portal</span>
             </button>
-
-            <div className="px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-pink-500/20 to-purple-500/20 border border-amber-400/40 text-amber-200 font-mono text-xs font-bold flex items-center gap-1.5 shadow-lg">
-              <Trophy className="w-4 h-4 text-amber-400 fill-amber-400" />
-              <span>{synergyPoints.toLocaleString()} Synergy PTS</span>
-            </div>
           </div>
         </div>
       </GlassCard>
@@ -2695,58 +3322,69 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
       {/* Main Game Mode Sub-Navigation Tabs */}
       <div className="flex items-center gap-1.5 border-b border-white/10 pb-2 overflow-x-auto text-xs font-mono">
         <button
-          onClick={() => setActiveGameTab('wheel')}
-          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          onClick={() => selectGameTab('wheel')}
+          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
             activeGameTab === 'wheel'
               ? 'bg-gradient-to-r from-pink-500 via-rose-500 to-purple-600 text-white shadow-lg shadow-pink-500/25 font-black'
               : 'bg-white/5 text-zinc-300 hover:bg-white/10'
           }`}
         >
-          <RotateCw className="w-4 h-4" /> 🎡 Realistic Naughty Wheel
+          <RotateCw className="w-4 h-4" /> 🎡 4×360 Aviator Wheel {isTabUnlocked('wheel') ? '✓' : '🔒'}
         </button>
 
         <button
-          onClick={() => setActiveGameTab('cards')}
-          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          onClick={() => selectGameTab('aviator_crash')}
+          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
+            activeGameTab === 'aviator_crash'
+              ? 'bg-gradient-to-r from-rose-500 via-red-500 to-amber-500 text-white shadow-lg shadow-rose-500/25 font-black'
+              : 'bg-white/5 text-zinc-300 hover:bg-white/10'
+          }`}
+        >
+          <Plane className="w-4 h-4 text-amber-300" /> ✈️ Aviator Heat Crash {isTabUnlocked('aviator_crash') ? '✓' : '🔒'}
+        </button>
+
+        <button
+          onClick={() => selectGameTab('cards')}
+          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
             activeGameTab === 'cards'
               ? 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-lg shadow-purple-500/25 font-black'
               : 'bg-white/5 text-zinc-300 hover:bg-white/10'
           }`}
         >
-          <Flame className="w-4 h-4 text-pink-400" /> 🃏 Endless Truth & Dare
+          <Flame className="w-4 h-4 text-pink-400" /> 🃏 Endless Truth & Dare {isTabUnlocked('cards') ? '✓' : '🔒'}
         </button>
 
         <button
-          onClick={() => setActiveGameTab('social_viral')}
-          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          onClick={() => selectGameTab('social_viral')}
+          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
             activeGameTab === 'social_viral'
               ? 'bg-gradient-to-r from-red-500 via-pink-500 to-amber-500 text-white shadow-lg shadow-pink-500/25 font-black'
               : 'bg-white/5 text-zinc-300 hover:bg-white/10'
           }`}
         >
-          <Smartphone className="w-4 h-4 text-pink-400" /> 📱 Viral TikTok / Social Challenges
+          <Smartphone className="w-4 h-4 text-pink-400" /> 📱 Viral Social Quests {isTabUnlocked('social_viral') ? '✓' : '🔒'}
         </button>
 
         <button
-          onClick={() => setActiveGameTab('dice')}
-          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          onClick={() => selectGameTab('dice')}
+          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
             activeGameTab === 'dice'
               ? 'bg-gradient-to-r from-amber-400 to-yellow-500 text-black shadow-lg shadow-amber-500/25 font-black'
               : 'bg-white/5 text-zinc-300 hover:bg-white/10'
           }`}
         >
-          <Dices className="w-4 h-4 text-amber-300" /> 🎲 Craving Dice
+          <Dices className="w-4 h-4 text-amber-300" /> 🎲 Craving Dice {isTabUnlocked('dice') ? '✓' : '🔒'}
         </button>
 
         <button
-          onClick={() => setActiveGameTab('quiz')}
-          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          onClick={() => selectGameTab('quiz')}
+          className={`px-3.5 py-2 rounded-xl font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
             activeGameTab === 'quiz'
               ? 'bg-gradient-to-r from-cyan-400 to-blue-500 text-black shadow-lg shadow-cyan-500/25 font-black'
               : 'bg-white/5 text-zinc-300 hover:bg-white/10'
           }`}
         >
-          <HelpCircle className="w-4 h-4" /> 🧠 Who Knows Me Best?
+          <HelpCircle className="w-4 h-4" /> 🧠 Who Knows Me Best? {isTabUnlocked('quiz') ? '✓' : '🔒'}
         </button>
       </div>
 
@@ -3257,227 +3895,104 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
             </div>
           )}
 
-          {/* VIP PREMIUM ACTIVE BANNER vs BASIC QUOTA TRACKER */}
-          {isVipOrPass ? (
-            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-pink-500/20 to-purple-500/20 border-2 border-amber-400/50 flex flex-wrap items-center justify-between gap-3 text-left shadow-xl shadow-amber-500/10">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-400 to-yellow-500 text-black flex items-center justify-center font-black shadow-md shrink-0">
-                  <Crown className="w-5 h-5 fill-black" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-black text-amber-300 font-mono tracking-wide">
-                      👑 VIP PREMIUM SUBSCRIPTION ACTIVE: ENDLESS SPICY THROUGHOUT
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-200 border border-amber-400/40 text-[10px] font-mono font-bold">
-                      2x PTS BONUS (+150 PTS)
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-zinc-300 font-sans">
-                    All 6 Spicy Vybe Levels Unlocked 24/7 • No 2-Hour Cooldown • Endless Non-Repeating Prompts
-                  </p>
-                </div>
-              </div>
-
-              {/* VIP Quick Tool Triggers */}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setShowAiSpicyGenerator(true)}
-                  className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-400 hover:to-purple-500 text-white font-mono text-xs font-extrabold shadow-md flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Generate instant AI spicy challenge"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                  <span>⚡ AI Spicy Generator</span>
-                </button>
-                <button
-                  onClick={() => setShowCustomDareModal(true)}
-                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-zinc-200 font-mono text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Send custom dare to your partner"
-                >
-                  <span>✍️ Custom Dare</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="p-3 rounded-2xl bg-white/5 border border-white/10 flex flex-wrap items-center justify-between gap-3 text-left">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 flex items-center justify-center font-bold text-xs shrink-0">
-                  <span>🟢</span>
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-bold text-emerald-300 font-mono">
-                      BASIC MODE (FREE): 5-Prompt Repeating Sample Loop
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full bg-white/10 text-zinc-300 text-[10px] font-mono">
-                      {Math.max(0, 5 - basicPlayCount)}/5 daily plays left
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-zinc-400">
-                    Basic experience repeats mild sample prompts and rests near 2h so next day brings more vybe. VIP unlocks endless throughout!
-                  </p>
-                </div>
-              </div>
-
-              {onOpenUpgradeModal && (
-                <button
-                  onClick={() =>
-                    onOpenUpgradeModal(
-                      'Unlock Endless Spicy, More Spicy, Hot, Extra Hot & Extremely Hot Vybes Throughout via Google Pay ($0.99 / $5.99)!'
-                    )
-                  }
-                  className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-400 text-black font-mono font-black text-xs shadow-lg hover:scale-105 transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
-                >
-                  <Crown className="w-3.5 h-3.5 fill-black" />
-                  <span>Unlock VIP ($0.99 / $5.99)</span>
-                </button>
-              )}
-            </div>
+          {renderSubscriptionBanner(
+            'BASIC MODE (FREE): 5-Prompt Repeating Sample Loop',
+            'Zero Repeats · 4× 360° Aviator Blind Spin · Nasty Scaling Unlocked'
           )}
 
-          {/* BASIC DAILY ALLOWANCE REACHED (RESTING UNTIL TOMORROW) VIEW */}
-          {isBasicLimitReached && (
-            <div className="p-5 rounded-3xl bg-gradient-to-b from-indigo-950/80 via-purple-950/80 to-[#120f20] border-2 border-pink-500/60 shadow-2xl text-center space-y-4 relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-48 h-48 bg-pink-500/10 rounded-full blur-2xl pointer-events-none" />
-              <div className="w-14 h-14 mx-auto rounded-full bg-gradient-to-tr from-purple-600 to-pink-500 p-0.5 shadow-xl flex items-center justify-center">
-                <div className="w-full h-full bg-[#151025] rounded-full flex items-center justify-center text-2xl">
-                  🌙
-                </div>
-              </div>
+          {renderBasicLimitGate()}
 
-              <div className="space-y-1.5 max-w-lg mx-auto">
-                <span className="px-3 py-1 rounded-full bg-pink-500/20 border border-pink-400/40 text-pink-300 text-xs font-mono font-extrabold uppercase tracking-wider">
-                  Basic Daily Allowance Concluded
-                </span>
-                <h3 className="text-xl sm:text-2xl font-black text-white">
-                  Basic Energy Rested Until Tomorrow
-                </h3>
-                <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed font-sans">
-                  You’ve played through your <strong>5 free basic plays (or ~2 hours intimacy session)</strong> for today! Content is resting until tomorrow so it brings more fresh vybe next day.
-                </p>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-black/40 border border-white/10 max-w-md mx-auto flex items-center justify-around text-xs font-mono">
-                <div>
-                  <span className="text-zinc-500 block text-[10px]">Today&apos;s Plays</span>
-                  <strong className="text-amber-300 font-bold">{basicPlayCount} / 5 Plays</strong>
-                </div>
-                <div className="w-px h-8 bg-white/10" />
-                <div>
-                  <span className="text-zinc-500 block text-[10px]">Session Time</span>
-                  <strong className="text-cyan-300 font-bold">~{elapsedMinutes} mins (~2 hrs)</strong>
-                </div>
-                <div className="w-px h-8 bg-white/10" />
-                <div>
-                  <span className="text-zinc-500 block text-[10px]">Energy Refresh</span>
-                  <strong className="text-emerald-300 font-bold">Tomorrow 00:00 🔋</strong>
-                </div>
-              </div>
-
-              {/* VIP Pitch: Don't stop the vybe tonight */}
-              <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-pink-500/15 to-purple-500/15 border border-amber-400/40 max-w-lg mx-auto space-y-2 text-left">
-                <div className="flex items-center gap-2">
-                  <Crown className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                  <span className="text-xs font-bold text-amber-300 font-mono">
-                    Don&apos;t want the vybe to end tonight?
-                  </span>
-                </div>
-                <p className="text-xs text-zinc-200 leading-relaxed font-sans">
-                  VIP subscription is completely <strong>endless throughout 24/7</strong> with zero repetition or 2-hour limits! Unlocks all spicy levels: <strong>Spicy 🌶️, More Spicy 🌶️🔥, Most Spicy 🌶️🌶️🔥, Hot 🔥, Extra Hot 🔥💋 & Extremely Hot 💥🫦</strong> plus 2x Synergy Points!
-                </p>
-                <div className="pt-2 flex flex-col sm:flex-row items-center gap-2.5">
-                  {onOpenUpgradeModal && (
-                    <button
-                      onClick={() =>
-                        onOpenUpgradeModal(
-                          'Unlock Endless Spicy, More Spicy, Hot, Extra Hot & Extremely Hot Vybes Throughout via Google Pay ($0.99 / $5.99)!'
-                        )
-                      }
-                      className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 text-black font-mono font-black text-xs shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Crown className="w-4 h-4 fill-black" />
-                      <span>Unlock VIP with Google Pay ($0.99 / $5.99)</span>
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setShowVipPreviewDrawer(true)}
-                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-zinc-300 text-xs font-mono font-bold transition-all cursor-pointer"
-                  >
-                    👀 Preview VIP Endless Spectrum
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Spiciness & Nastiness Tier Filter Bar (All 6 Distinct Vybe Levels) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-zinc-400 font-bold text-xs font-mono flex items-center gap-1.5">
-                <Flame className="w-4 h-4 text-pink-400" /> Intimacy & Spicy Vybe Level:
-              </span>
-              <span className="text-[11px] font-mono text-zinc-400">
-                {isVipOrPass ? '👑 All VIP Vybes Unlocked Endless' : '🔒 Basic: Mild Romance Only'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5 text-xs font-mono">
-              {SPICY_VYBE_TIERS.map((tier) => {
-                const isActive = intensityFilter === tier.id;
-                const isLocked = tier.isSubscriptionOnly && !isVipOrPass;
-
-                return (
-                  <button
-                    key={tier.id}
-                    onClick={() => {
-                      if (isLocked) {
-                        if (onOpenUpgradeModal) {
-                          onOpenUpgradeModal(
-                            `Unlock ${tier.label} ($0.99 1-Day Pass or $5.99 VIP via Google Pay) for endless uncapped vybes throughout!`
-                          );
-                        }
-                        playMechanicalTick(60);
-                      } else {
-                        setIntensityFilter(tier.id);
-                        playMechanicalTick(20);
-                      }
-                    }}
-                    className={`p-2 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-1 border text-center relative group ${
-                      isActive
-                        ? `bg-gradient-to-b ${tier.gradient} text-white font-black shadow-lg border-white/40 scale-102`
-                        : isLocked
-                        ? 'bg-black/40 border-white/5 text-zinc-400 hover:border-amber-400/40 hover:text-white'
-                        : 'bg-white/5 border-white/10 text-zinc-300 hover:bg-white/10 hover:text-white'
-                    }`}
-                    title={tier.description}
-                  >
-                    {/* Lock Badge for Subscription Tiers */}
-                    {isLocked && (
-                      <span className="absolute -top-1.5 -right-1 px-1.5 py-0.2 rounded-full bg-amber-400 text-black font-black text-[9px] flex items-center gap-0.5 shadow">
-                        <Lock className="w-2.5 h-2.5" /> VIP
-                      </span>
-                    )}
-
-                    <span className="text-base sm:text-lg">{tier.icon}</span>
-                    <span className="text-[10.5px] leading-tight font-extrabold truncate w-full">
-                      {tier.shortLabel}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          {renderSpicyVybeTierBar('Intimacy & Spicy Vybe Level')}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
             {/* The Real Physical Wheel SVG Component (Col 1-7) */}
-            <GlassCard className="lg:col-span-7 p-4 sm:p-6 text-center space-y-4 flex flex-col items-center justify-center border border-pink-500/40 relative overflow-hidden">
-              <div className="flex items-center justify-between w-full">
-                <span className="text-[11px] font-mono text-zinc-400 uppercase tracking-widest font-bold flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" /> True Lottery Random Spin
+            <GlassCard className="lg:col-span-7 p-4 sm:p-6 text-center space-y-3.5 flex flex-col items-center justify-center border border-pink-500/40 relative overflow-hidden">
+              <div className="flex items-center justify-between w-full gap-2 flex-wrap">
+                <span className="text-[11px] font-mono text-zinc-300 uppercase tracking-wider font-bold flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" /> 4×360° (1440°) Blind Wheel
                 </span>
-                <span className="px-2 py-0.5 rounded-full bg-pink-500/20 border border-pink-400/40 text-pink-300 font-mono text-[10px]">
-                  Fast 2.4s Kinetic Rotation
-                </span>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAviatorBlindMode((prev) => !prev);
+                    playMechanicalTick(30);
+                  }}
+                  className={`px-2.5 py-1 rounded-xl font-mono text-[10.5px] font-bold border flex items-center gap-1.5 cursor-pointer transition-all whitespace-nowrap ${
+                    isAviatorBlindMode
+                      ? 'bg-rose-500/20 border-rose-400/50 text-rose-200'
+                      : 'bg-white/5 border-white/15 text-zinc-300 hover:text-white'
+                  }`}
+                  title="Aviator Unknown Mode hides slice names during the 4 full rotations so outcomes land unpredictably"
+                >
+                  <EyeOff className="w-3.5 h-3.5" />
+                  <span>{isAviatorBlindMode ? 'Aviator Blind: ON' : 'Aviator Blind: OFF'}</span>
+                </button>
+              </div>
+
+              {/* Crisp Aviator + 4x360° Live Telemetry Strip */}
+              <div className="w-full space-y-2">
+                <div className="w-full grid grid-cols-3 gap-2 p-2.5 rounded-2xl bg-black/45 border border-white/10 font-mono text-left">
+                  <div>
+                    <span className="text-[9.5px] uppercase tracking-wider text-zinc-400 block">4× 360° Turn</span>
+                    <strong className="text-xs sm:text-sm text-cyan-300 font-black tabular-nums">
+                      {wheelTurnCount}/4 · {wheelTurnCount * 360}°
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-[9.5px] uppercase tracking-wider text-zinc-400 block">Target Status</span>
+                    <strong className="text-xs sm:text-sm text-pink-300 font-black whitespace-nowrap">
+                      {isSpinning
+                        ? isAviatorBlindMode
+                          ? 'UNKNOWN'
+                          : 'SPINNING'
+                        : wheelSpinPhase === 'LOCKED'
+                        ? 'LOCKED'
+                        : 'READY'}
+                    </strong>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[9.5px] uppercase tracking-wider text-zinc-400 block">Aviator Boost</span>
+                    <strong className="text-xs sm:text-sm text-amber-300 font-black tabular-nums">
+                      {aviatorWheelMultiplier.toFixed(2)}x
+                    </strong>
+                  </div>
+                </div>
+
+                {(() => {
+                  const poolForFilter = !isVipOrPass
+                    ? NAUGHTY_WHEEL_SEGMENTS.filter((s) => s.vybeLevel === 'mild')
+                    : intensityFilter !== 'all'
+                    ? NAUGHTY_WHEEL_SEGMENTS.filter(
+                        (s) =>
+                          s.vybeLevel === intensityFilter &&
+                          (SPICY_LEVEL_RANK[s.vybeLevel] ?? 0) <= subProfile.maxVybeRank
+                      )
+                    : NAUGHTY_WHEEL_SEGMENTS.filter(
+                        (s) => (SPICY_LEVEL_RANK[s.vybeLevel] ?? 0) <= subProfile.maxVybeRank
+                      );
+                  const eligiblePool = poolForFilter.length > 0 ? poolForFilter : NAUGHTY_WHEEL_SEGMENTS;
+                  const unplayedCount = eligiblePool.filter(
+                    (s) => !activeExcludedWheelIds.includes(s.id) && s.id !== activeLastPlayedWheelId
+                  ).length;
+
+                  return (
+                    <div className="w-full px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-2 text-[10.5px] font-mono tabular-nums">
+                      <span className="text-zinc-300">
+                        {isVipOrPass ? (
+                          <>
+                            Pool: <strong className="text-emerald-300">{Math.max(1, unplayedCount)}/{eligiblePool.length}</strong> Unplayed Left
+                          </>
+                        ) : (
+                          <span>Wheel Locked · Paid Plan Required</span>
+                        )}
+                      </span>
+                      <span className="text-amber-300 font-bold">
+                        {isVipOrPass ? `Endless Cycle #${activeWheelCycleCount}` : 'Subscribe ($1.00+) to Spin'}
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Wheel Container with Pointer / Flapper */}
@@ -3499,15 +4014,15 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                   <div className="w-0 h-0 border-l-[10px] border-l-transparent border-r-[10px] border-r-transparent border-t-[24px] border-t-amber-400 -mt-1" />
                 </div>
 
-                {/* Rotating Wheel Body - Smooth 2.4s Fast Spin */}
+                {/* Rotating Wheel Body - Smooth 2.8s 4x360° Spin */}
                 <div
                   className="w-full h-full rounded-full cursor-pointer select-none"
                   style={{
                     transform: `rotate(${wheelRotation}deg)`,
-                    transition: isSpinning ? 'transform 2.4s cubic-bezier(0.12, 0.98, 0.22, 1)' : 'none',
+                    transition: isSpinning ? 'transform 2.8s cubic-bezier(0.12, 0.98, 0.22, 1)' : 'none',
                   }}
                   onClick={spinPhysicalWheel}
-                  title="Click or Tap to Spin the Wheel!"
+                  title="Click or Tap for a 4×360° Blind Spin!"
                 >
                   <svg viewBox="0 0 400 400" className="w-full h-full drop-shadow-2xl">
                     <defs>
@@ -3544,19 +4059,23 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
 
                       const midAngleDeg = i * sliceAngle + sliceAngle / 2;
                       const isHighlighted = !isSpinning && winningSegmentIndex === i;
+                      const isBlindCloaked = isSpinning && isAviatorBlindMode;
+                      const isPlayedInPool = isVipOrPass && activeExcludedWheelIds.includes(seg.id);
 
                       return (
                         <g key={seg.id}>
                           {/* Segment Wedge */}
                           <path
                             d={pathData}
-                            fill={seg.color}
-                            fillOpacity={isHighlighted ? 0.98 : 0.82}
-                            stroke="#0f0e17"
-                            strokeWidth="2.5"
+                            fill={isBlindCloaked ? '#1d1631' : seg.color}
+                            fillOpacity={
+                              isBlindCloaked ? 0.94 : isHighlighted ? 0.98 : isPlayedInPool ? 0.42 : 0.85
+                            }
+                            stroke={isBlindCloaked ? '#fbbf24' : '#0f0e17'}
+                            strokeWidth={isBlindCloaked ? '1.8' : '2.5'}
                           />
 
-                          {/* High-Contrast Pill Backdrop & Visible Readable Text */}
+                          {/* High-Contrast Pill Backdrop & Visible / Mystery Blind Text */}
                           <g transform={`rotate(${midAngleDeg}, 200, 200)`}>
                             <rect
                               x="134"
@@ -3564,8 +4083,20 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                               width="132"
                               height="26"
                               rx="13"
-                              fill="rgba(12, 10, 22, 0.88)"
-                              stroke="rgba(255, 255, 255, 0.45)"
+                              fill={
+                                isBlindCloaked
+                                  ? 'rgba(244, 63, 94, 0.25)'
+                                  : isPlayedInPool
+                                  ? 'rgba(12, 10, 22, 0.62)'
+                                  : 'rgba(12, 10, 22, 0.88)'
+                              }
+                              stroke={
+                                isBlindCloaked
+                                  ? 'rgba(251, 191, 36, 0.65)'
+                                  : isPlayedInPool
+                                  ? 'rgba(255, 255, 255, 0.2)'
+                                  : 'rgba(255, 255, 255, 0.45)'
+                              }
                               strokeWidth="1.2"
                               filter="url(#shadow)"
                             />
@@ -3573,14 +4104,18 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                               x="200"
                               y="61"
                               textAnchor="middle"
-                              fill="#ffffff"
+                              fill={isPlayedInPool && !isBlindCloaked && !isHighlighted ? '#a1a1aa' : '#ffffff'}
                               fontSize="11.5"
                               fontWeight="900"
                               fontFamily="sans-serif"
                               letterSpacing="0.2px"
                               style={{ textShadow: '0 2px 4px rgba(0,0,0,1)' }}
                             >
-                              {seg.emoji} {seg.shortLabel}
+                              {isBlindCloaked
+                                ? '❓ UNKNOWN'
+                                : isPlayedInPool && !isHighlighted
+                                ? `✓ ${seg.shortLabel}`
+                                : `${seg.emoji} ${seg.shortLabel}`}
                             </text>
                           </g>
                         </g>
@@ -3624,142 +4159,429 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                       }`}
                     />
                     <span className="text-[10px] tracking-widest text-amber-300 font-mono">
-                      {isSpinning ? 'SPINNING' : 'SPIN'}
+                      SPIN
                     </span>
                   </button>
                 </div>
               </div>
 
-              {/* Action Buttons below wheel */}
+              {/* Action Button below wheel (Strictly "Spin") */}
               <div className="w-full flex items-center justify-center gap-3 pt-1">
                 <button
                   onClick={spinPhysicalWheel}
                   disabled={isSpinning}
-                  className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-400 text-white font-extrabold text-xs shadow-lg shadow-pink-500/30 hover:scale-105 active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
+                  className="px-10 py-3 min-h-[44px] rounded-2xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-400 text-white font-black text-sm tracking-wide shadow-lg shadow-pink-500/30 hover:scale-105 active:scale-95 disabled:opacity-65 transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
                 >
-                  <Flame className="w-4 h-4 fill-white" />
-                  <span>{isSpinning ? 'Spinning Naughty Wheel...' : 'Spin Naughty Wheel'}</span>
+                  <Zap className="w-4 h-4 fill-white" />
+                  <span>Spin</span>
                 </button>
               </div>
             </GlassCard>
 
-            {/* Current Active Trending Game Card (Col 8-12) */}
-            <GlassCard className="lg:col-span-5 p-5 space-y-4 border border-pink-500/40 flex flex-col justify-between h-full bg-gradient-to-b from-[#18152b] to-[#12101e]">
-              <div className="space-y-3">
-                {/* Header: Segment Title & Emoji */}
-                <div className="flex items-start justify-between gap-2 border-b border-white/10 pb-3">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-3xl">{currentSegment.emoji}</span>
-                    <div>
-                      <span className="text-[10px] font-mono uppercase text-pink-400 font-extrabold tracking-wider block">
-                        Trending Game #{currentSegment.id + 1}
-                      </span>
-                      <h3 className="text-base sm:text-lg font-black text-white leading-tight">
-                        {currentSegment.title}
-                      </h3>
+            {/* Current Active Dare Card with 3D Glassmorphic Framer Motion Flip Sequence (Col 8-12) */}
+            <div className="lg:col-span-5 h-full [perspective:1200px]">
+              <motion.div
+                key={`dare-flip-${dareFlipKey}`}
+                initial={false}
+                animate={{
+                  rotateY: dareFlipStage === 'FLIPPING_BACK' ? 180 : 0,
+                  scale: dareFlipStage === 'FLIPPING_BACK' ? 0.96 : 1,
+                }}
+                transition={{
+                  duration: 0.65,
+                  ease: [0.22, 1, 0.36, 1],
+                }}
+                style={{ transformStyle: 'preserve-3d' }}
+                className="relative w-full h-full"
+              >
+                {/* BACK FACE (3D Glassmorphic Mystery Crest shown while spinning & right before challenge reveal) */}
+                <div
+                  style={{
+                    backfaceVisibility: 'hidden',
+                    transform: 'rotateY(180deg)',
+                  }}
+                  className="absolute inset-0 z-20 rounded-3xl p-6 border border-white/25 bg-gradient-to-br from-pink-500/20 via-[#1a1230]/90 to-cyan-500/20 backdrop-blur-xl shadow-2xl flex flex-col items-center justify-center text-center gap-4 overflow-hidden pointer-events-none"
+                >
+                  <motion.div
+                    animate={{ x: ['-120%', '140%'] }}
+                    transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+                    className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-white/15 to-transparent -skew-x-12 pointer-events-none"
+                  />
+                  <div className="w-16 h-16 rounded-2xl bg-white/10 border border-white/30 backdrop-blur-md flex items-center justify-center shadow-lg">
+                    <Sparkles className="w-8 h-8 text-amber-300 animate-pulse" />
+                  </div>
+                  <div className="space-y-1.5 relative z-10">
+                    <span className="px-3 py-1 rounded-lg bg-pink-500/25 border border-pink-400/40 text-pink-200 font-mono text-[10px] font-black uppercase tracking-widest">
+                      {isSpinning ? '4× 360° Blind Locking...' : 'Dare Selected · Flipping Reveal'}
+                    </span>
+                    <h3 className="text-xl font-black text-white tracking-tight">
+                      {isSpinning ? 'Selecting Unknown Dare' : currentSegment.title}
+                    </h3>
+                    <p className="text-xs text-zinc-300 font-mono tabular-nums">
+                      Boost Locked: {aviatorWheelMultiplier.toFixed(2)}x · Turn {wheelTurnCount}/4
+                    </p>
+                  </div>
+                </div>
+
+                {/* FRONT FACE (Revealed Dare Challenge Card) */}
+                <div className="h-full [backface-visibility:hidden]">
+                <GlassCard
+                  className="p-5 space-y-4 border border-pink-500/40 flex flex-col justify-between h-full bg-gradient-to-b from-[#18152b] to-[#12101e]"
+                >
+                  <div className="space-y-3">
+                    {/* Header: Segment Title & Emoji */}
+                    <div className="flex items-start justify-between gap-2 border-b border-white/10 pb-3">
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-3xl">{isSpinning && isAviatorBlindMode ? '❓' : currentSegment.emoji}</span>
+                        <div>
+                          <span className="text-[10px] font-mono uppercase text-pink-400 font-extrabold tracking-wider block">
+                            {isSpinning && isAviatorBlindMode
+                              ? 'Flying Blind (4×360°)...'
+                              : synthesizedWheelPrompt
+                              ? `Fresh Synthesized Quest · ${aviatorWheelMultiplier.toFixed(2)}x`
+                              : `Dare #${currentSegment.id + 1} · ${aviatorWheelMultiplier.toFixed(2)}x Boost`}
+                          </span>
+                          <h3 className="text-base sm:text-lg font-black text-white leading-tight">
+                            {isSpinning && isAviatorBlindMode ? 'Locking Secret Dare...' : currentSegment.title}
+                          </h3>
+                        </div>
+                      </div>
+
+                      {/* Intensity Rating */}
+                      <div className="flex items-center gap-0.5" title={`Intensity: ${currentSegment.intensity}/5`}>
+                        {Array.from({ length: 5 }).map((_, fIdx) => (
+                          <span
+                            key={fIdx}
+                            className={`text-xs ${
+                              fIdx < currentSegment.intensity ? 'opacity-100' : 'opacity-20 grayscale'
+                            }`}
+                          >
+                            🌶️
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Healthy Intimacy Scientific Benefit */}
+                    <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-400/30 text-emerald-200 text-[11px] font-mono flex items-start gap-2">
+                      <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold uppercase text-[10px] text-emerald-300 block">
+                          Healthy Connection Benefit:
+                        </span>
+                        <p className="text-[10.5px] leading-snug">{currentSegment.healthyBenefit}</p>
+                      </div>
+                    </div>
+
+                    {/* Specific Challenge Prompt (Staggered Glass Reveal after 3D flip) */}
+                    <motion.div
+                      key={`prompt-reveal-${dareFlipKey}-${dareFlipStage}`}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.35, delay: dareFlipStage === 'REVEALED' ? 0.18 : 0 }}
+                      className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-2 backdrop-blur-md"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-mono text-cyan-300 uppercase font-bold flex items-center gap-1">
+                          <Sparkles className="w-3 h-3" />{' '}
+                          {isVipOrPass ? `0-Repeat Activity #${(seenActivityIds.wheel?.length || 0) + 1}` : 'Subscription Preview'}:
+                        </span>
+                        <button
+                          onClick={nextPromptVariation}
+                          className="text-[11px] font-mono text-pink-300 hover:text-white flex items-center gap-1 cursor-pointer font-bold whitespace-nowrap"
+                        >
+                          <Shuffle className="w-3 h-3" /> Next Unseen
+                        </button>
+                      </div>
+                      <p className="text-xs sm:text-sm text-white font-medium leading-relaxed italic">
+                        {!isVipOrPass
+                          ? '"Subscribe with Google Pay ($1.00+) to unlock the 4×360° Aviator blind spin & zero-repeat dares."'
+                          : isSpinning && isAviatorBlindMode
+                          ? '"Turning 4 full 360° revolutions blindly — surprise dare reveals on lock!"'
+                          : `"${currentPromptText}"`}
+                      </p>
+                    </motion.div>
+
+                    {/* Interactive Countdown Timer */}
+                    <div className="p-3 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-amber-400" />
+                        <span className="text-xs font-mono text-zinc-300">
+                          Timer: <strong className="text-white text-sm font-mono tabular-nums">{timerSeconds}s</strong>
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            if (requiresPaidSubscription) {
+                              openSubscriptionPaywall('4×360° Aviator Wheel Timer');
+                              return;
+                            }
+                            setIsTimerRunning(!isTimerRunning);
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-amber-400 text-black font-extrabold text-xs shadow hover:scale-105 transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                        >
+                          {isTimerRunning ? <Pause className="w-3 h-3 fill-black" /> : <Play className="w-3 h-3 fill-black" />}
+                          <span>{isTimerRunning ? 'Pause' : 'Start Timer'}</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setIsTimerRunning(false);
+                            setTimerSeconds(currentSegment.suggestedDurationSec);
+                          }}
+                          className="p-1.5 rounded-xl bg-white/10 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                          title="Reset Timer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Intensity Rating */}
-                  <div className="flex items-center gap-0.5" title={`Intensity: ${currentSegment.intensity}/5`}>
-                    {Array.from({ length: 5 }).map((_, fIdx) => (
-                      <span
-                        key={fIdx}
-                        className={`text-xs ${
-                          fIdx < currentSegment.intensity ? 'opacity-100' : 'opacity-20 grayscale'
-                        }`}
-                      >
-                        🌶️
+                  {/* Action Completion */}
+                  <div className="space-y-2 pt-2 border-t border-white/10">
+                    <button
+                      onClick={() => handleCompleteChallenge(aviatorWheelMultiplier)}
+                      className="w-full py-3 min-h-[44px] rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-black text-xs sm:text-sm shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      {!isVipOrPass ? <Lock className="w-4 h-4" /> : <PartyPopper className="w-4 h-4 fill-black" />}
+                      <span>
+                        {isVipOrPass ? 'Complete Challenge' : 'Subscribe ($1.00+) to Play'}
                       </span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Healthy Intimacy Scientific Benefit */}
-                <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-400/30 text-emerald-200 text-[11px] font-mono flex items-start gap-2">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold uppercase text-[10px] text-emerald-300 block">
-                      Healthy Connection Benefit:
-                    </span>
-                    <p className="text-[10.5px] leading-snug">{currentSegment.healthyBenefit}</p>
-                  </div>
-                </div>
-
-                {/* Specific Challenge Prompt */}
-                <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono text-cyan-300 uppercase font-bold flex items-center gap-1">
-                      <Sparkles className="w-3 h-3" /> Challenge Variation #{activePromptIndex + 1}:
-                    </span>
-                    <button
-                      onClick={nextPromptVariation}
-                      className="text-[11px] font-mono text-pink-300 hover:text-white flex items-center gap-1 cursor-pointer font-bold"
-                    >
-                      <Shuffle className="w-3 h-3" /> Next Variation
                     </button>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={spinPhysicalWheel}
+                        disabled={isSpinning}
+                        className="flex-1 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                      >
+                        <RotateCw className="w-3.5 h-3.5 text-pink-400" /> Spin
+                      </button>
+                      <button
+                        onClick={nextPromptVariation}
+                        className="flex-1 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                      >
+                        <Shuffle className="w-3.5 h-3.5 text-cyan-400" /> Fresh Unseen
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-xs sm:text-sm text-white font-medium leading-relaxed italic">
-                    &quot;{currentPromptText}&quot;
-                  </p>
+                </GlassCard>
                 </div>
+              </motion.div>
+            </div>
+          </div>
+        </div>
+      )}
 
-                {/* Interactive Countdown Timer */}
-                <div className="p-3 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Clock className="w-4 h-4 text-amber-400" />
-                    <span className="text-xs font-mono text-zinc-300">
-                      Timer: <strong className="text-white text-sm font-mono">{timerSeconds}s</strong>
-                    </span>
-                  </div>
+      {/* =============================================================
+          MODE 6: AVIATOR HEAT CRASH DARES (UNKNOWN CRASH ESCALATION)
+          ============================================================= */}
+      {activeGameTab === 'aviator_crash' && (
+        <div className="space-y-4">
+          {renderSubscriptionBanner(
+            'BASIC MODE: Mild Aviator Warmup (1.5x Cap)',
+            'Unknown Crash Trajectory · Heat & Nasty Escalation Locked to Subscription'
+          )}
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setIsTimerRunning(!isTimerRunning)}
-                      className="px-3 py-1.5 rounded-xl bg-amber-400 text-black font-extrabold text-xs shadow hover:scale-105 transition-all flex items-center gap-1 cursor-pointer"
-                    >
-                      {isTimerRunning ? <Pause className="w-3 h-3 fill-black" /> : <Play className="w-3 h-3 fill-black" />}
-                      <span>{isTimerRunning ? 'Pause' : 'Start Timer'}</span>
-                    </button>
-                    <button
-                      onClick={() => {
-                        setIsTimerRunning(false);
-                        setTimerSeconds(currentSegment.suggestedDurationSec);
-                      }}
-                      className="p-1.5 rounded-xl bg-white/10 text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                      title="Reset Timer"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+          {renderBasicLimitGate()}
 
-              {/* Action Completion & Award Points */}
-              <div className="space-y-2 pt-2 border-t border-white/10">
-                <button
-                  onClick={handleCompleteChallenge}
-                  className="w-full py-3 rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-black text-xs sm:text-sm shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <PartyPopper className="w-4 h-4 fill-black" /> Complete Challenge (+75 Pts)
-                </button>
-
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+            {/* Flight Radar & Trajectory Curve (Col 1-7) */}
+            <GlassCard className="lg:col-span-7 p-5 border border-rose-500/40 bg-gradient-to-b from-[#1a0f1f] to-[#0f0a16] space-y-4 flex flex-col justify-between">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={spinPhysicalWheel}
-                    disabled={isSpinning}
-                    className="flex-1 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-                  >
-                    <RotateCw className="w-3.5 h-3.5 text-pink-400" /> Spin Next Game
-                  </button>
-                  <button
-                    onClick={nextPromptVariation}
-                    className="flex-1 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-                  >
-                    <Shuffle className="w-3.5 h-3.5 text-cyan-400" /> Alternate Rule
-                  </button>
+                  <TrendingUp className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-mono font-black text-white uppercase tracking-wider">
+                    Aviator Heat Crash Trajectory
+                  </span>
                 </div>
+                <span
+                  className={`px-2.5 py-0.5 rounded-lg text-[10.5px] font-mono font-black border ${
+                    crashFlightState === 'FLYING'
+                      ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200 animate-pulse'
+                      : crashFlightState === 'LOCKED'
+                      ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200'
+                      : crashFlightState === 'CRASHED'
+                      ? 'bg-rose-500/20 border-rose-400/50 text-rose-200'
+                      : 'bg-white/10 border-white/15 text-zinc-300'
+                  }`}
+                >
+                  STATE: {crashFlightState}
+                </span>
               </div>
+
+              {/* Trajectory Chart Stage */}
+              {(() => {
+                const cap = Math.max(1.5, subProfile.multiplierCap);
+                const normProgress = Math.min(1, Math.max(0.02, (crashMultiplier - 1) / (cap - 1)));
+                const tipX = 24 + normProgress * 272;
+                const tipY = 128 - Math.pow(normProgress, 0.85) * 98;
+                const ctrlX = 24 + normProgress * 150;
+                const ctrlY = 128 - normProgress * 18;
+                const strokeColor =
+                  crashFlightState === 'CRASHED'
+                    ? '#f43f5e'
+                    : crashFlightState === 'LOCKED'
+                    ? '#22d3ee'
+                    : '#f59e0b';
+
+                return (
+                  <div className="relative rounded-2xl bg-black/55 border border-white/10 p-4 overflow-hidden">
+                    <div className="flex items-baseline justify-between gap-3 mb-2">
+                      <div>
+                        <span className="text-[10px] font-mono uppercase text-zinc-400 block">
+                          Live Escalation Multiplier
+                        </span>
+                        <span
+                          className={`text-3xl sm:text-4xl font-black font-mono tabular-nums tracking-tight ${
+                            crashFlightState === 'CRASHED'
+                              ? 'text-rose-400'
+                              : crashFlightState === 'LOCKED'
+                              ? 'text-cyan-300'
+                              : 'text-amber-300'
+                          }`}
+                        >
+                          {crashMultiplier.toFixed(2)}x
+                        </span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-[10px] font-mono uppercase text-zinc-400 block">
+                          Current Heat Tier
+                        </span>
+                        <strong className="text-xs sm:text-sm font-black text-pink-200">
+                          {crashHeatLabel}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <svg viewBox="0 0 320 150" className="w-full h-36 sm:h-44 overflow-visible">
+                      <defs>
+                        <linearGradient id="aviatorFillGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={strokeColor} stopOpacity="0.38" />
+                          <stop offset="100%" stopColor={strokeColor} stopOpacity="0.02" />
+                        </linearGradient>
+                      </defs>
+
+                      {/* Baseline grid lines */}
+                      <line x1="20" y1="130" x2="302" y2="130" stroke="rgba(255,255,255,0.14)" strokeWidth="1" />
+                      <line x1="20" y1="80" x2="302" y2="80" stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+                      <line x1="20" y1="30" x2="302" y2="30" stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+
+                      {/* Area Under Curve */}
+                      <path
+                        d={`M 24 128 Q ${ctrlX} ${ctrlY} ${tipX} ${tipY} L ${tipX} 130 L 24 130 Z`}
+                        fill="url(#aviatorFillGrad)"
+                      />
+
+                      {/* Ascending Trajectory Curve */}
+                      <path
+                        d={`M 24 128 Q ${ctrlX} ${ctrlY} ${tipX} ${tipY}`}
+                        fill="none"
+                        stroke={strokeColor}
+                        strokeWidth="3.5"
+                        strokeLinecap="round"
+                      />
+
+                      {/* Plane Marker at Tip */}
+                      <circle cx={tipX} cy={tipY} r="7" fill={strokeColor} fillOpacity="0.28" />
+                      <circle cx={tipX} cy={tipY} r="4" fill="#ffffff" stroke={strokeColor} strokeWidth="2" />
+                    </svg>
+
+                    <div className="flex items-center justify-between text-[10.5px] font-mono text-zinc-400 pt-1">
+                      <span>Plan Max Ceiling: <strong className="text-white">{subProfile.maxHeatLabel}</strong></span>
+                      <span className="tabular-nums">Max Boost: <strong className="text-amber-300">{cap.toFixed(1)}x</strong></span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Launch / Lock Controls (Min 44px Touch Targets) */}
+              <div className="flex flex-col sm:flex-row items-center gap-2.5">
+                {crashFlightState === 'FLYING' ? (
+                  <button
+                    onClick={lockHeatDare}
+                    className="w-full py-3.5 min-h-[44px] rounded-2xl bg-gradient-to-r from-cyan-400 via-emerald-400 to-teal-400 text-black font-mono font-black text-xs sm:text-sm shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer tabular-nums"
+                  >
+                    <Zap className="w-4 h-4 fill-black" />
+                    <span>Lock Dare Now ({crashMultiplier.toFixed(2)}x · {crashHeatLabel})</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={startHeatFlight}
+                    className="w-full py-3.5 min-h-[44px] rounded-2xl bg-gradient-to-r from-rose-500 via-pink-500 to-amber-500 text-white font-mono font-black text-xs sm:text-sm shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {!isVipOrPass ? <Lock className="w-4 h-4" /> : <Plane className="w-4 h-4" />}
+                    <span>
+                      {!isVipOrPass
+                        ? 'Subscribe to Launch Aviator ($1.00+)'
+                        : crashFlightState === 'READY'
+                        ? 'Launch Heat Flight (Unknown Crash Point)'
+                        : 'Fly Next Zero-Repeat Round'}
+                    </span>
+                  </button>
+                )}
+              </div>
+            </GlassCard>
+
+            {/* Aviator Outcome & Subscription Heat Ladder (Col 8-12) */}
+            <GlassCard className="lg:col-span-5 p-5 border border-amber-400/40 bg-gradient-to-b from-[#171225] to-[#0e0b18] flex flex-col justify-between space-y-4">
+              <div className="space-y-3">
+                <div className="border-b border-white/10 pb-2.5">
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300 font-bold block">
+                    Secret Crash Lock Outcome
+                  </span>
+                  <h3 className="text-base sm:text-lg font-black text-white">
+                    {crashResultDare ? crashResultDare.title : 'Ready for Unknown Takeoff'}
+                  </h3>
+                </div>
+
+                {crashResultDare ? (
+                  <div className="space-y-3">
+                    <div
+                      className={`p-4 rounded-2xl border space-y-2 ${
+                        crashResultDare.wasCrashPenalty
+                          ? 'bg-rose-500/15 border-rose-400/45'
+                          : 'bg-cyan-500/15 border-cyan-400/45'
+                      }`}
+                    >
+                      <span className="text-[10.5px] font-mono font-black uppercase text-amber-200 block">
+                        {crashResultDare.vybeLabel} · {crashResultDare.wonMultiplier.toFixed(2)}x Multiplier
+                      </span>
+                      <p className="text-xs sm:text-sm font-bold text-white leading-relaxed italic">
+                        &quot;{crashResultDare.text}&quot;
+                      </p>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-400/30 text-emerald-200 text-[11px] font-mono">
+                      <ShieldCheck className="w-3.5 h-3.5 inline mr-1 text-emerald-400" />
+                      {crashResultDare.benefit}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-xs text-zinc-300 space-y-2 leading-relaxed">
+                    <p>
+                      Tap <strong className="text-white">Launch Heat Flight</strong> and watch the plane climb unknowably from{' '}
+                      <strong className="text-emerald-300">Mild</strong> through <strong className="text-rose-300">{subProfile.maxHeatLabel}</strong>.
+                    </p>
+                    <p>
+                      Hit <strong className="text-cyan-300">Lock Dare Now</strong> before the hidden crash point to lock your chosen multiplier—or get caught by a surprise crash penalty dare! Zero repeats guaranteed on paid plans.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {crashResultDare && (
+                <button
+                  onClick={() => handleCompleteChallenge(crashResultDare.wonMultiplier)}
+                  className="w-full py-3 min-h-[44px] rounded-2xl bg-gradient-to-r from-emerald-400 to-cyan-400 text-black font-black text-xs sm:text-sm shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer tabular-nums"
+                >
+                  <PartyPopper className="w-4 h-4 fill-black" />
+                  <span>Complete Aviator Dare</span>
+                </button>
+              )}
             </GlassCard>
           </div>
         </div>
@@ -3785,24 +4607,25 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
             </span>
             <div className="flex items-center gap-1.5 flex-wrap">
               <button
-                onClick={() => setCardDeckIntensity('all')}
+                onClick={() => {
+                  if (requiresPaidSubscription) {
+                    openSubscriptionPaywall('Endless Truth & Dare Cards');
+                    return;
+                  }
+                  setCardDeckIntensity('all');
+                }}
                 className={`px-2.5 py-1 rounded-xl transition-all cursor-pointer ${
-                  cardDeckIntensity === 'all'
+                  cardDeckIntensity === 'all' && isVipOrPass
                     ? 'bg-purple-500 text-white font-extrabold shadow-md'
                     : 'bg-white/5 text-zinc-400 hover:text-white'
                 }`}
               >
-                {isVipOrPass ? `All Cards (${filteredCards.length})` : `Basic Sample (${filteredCards.length}/5)`}
+                {isVipOrPass ? `All Cards (${filteredCards.length})` : '🔒 All Cards (Paid)'}
               </button>
               <button
                 onClick={() => {
                   if (!isVipOrPass) {
-                    if (onOpenUpgradeModal) {
-                      onOpenUpgradeModal(
-                        'Unlock Spicy Very Naughty & Healthy Truth & Dare Cards ($0.99 1-Day Pass or $5.99 VIP via Google Pay)!'
-                      );
-                    }
-                    playMechanicalTick(60);
+                    openSubscriptionPaywall('Spicy Truth & Dare Cards');
                     return;
                   }
                   setCardDeckIntensity('spicy');
@@ -3817,19 +4640,23 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
               >
                 {!isVipOrPass && <Lock className="w-3 h-3 text-amber-400" />}
                 <span>🌶️ Very Naughty & Healthy</span>
-                {!isVipOrPass && (
-                  <span className="px-1.5 py-0.2 rounded-full bg-amber-400 text-black font-black text-[9px]">VIP</span>
-                )}
               </button>
               <button
-                onClick={() => setCardDeckIntensity('golden')}
-                className={`px-2.5 py-1 rounded-xl transition-all cursor-pointer ${
-                  cardDeckIntensity === 'golden'
+                onClick={() => {
+                  if (requiresPaidSubscription) {
+                    openSubscriptionPaywall('Golden Soulmates Cards');
+                    return;
+                  }
+                  setCardDeckIntensity('golden');
+                }}
+                className={`px-2.5 py-1 rounded-xl transition-all cursor-pointer flex items-center gap-1 ${
+                  cardDeckIntensity === 'golden' && isVipOrPass
                     ? 'bg-amber-400 text-black font-extrabold shadow-md'
                     : 'bg-white/5 text-zinc-400 hover:text-white'
                 }`}
               >
-                💃 Golden Soulmates (50+)
+                {!isVipOrPass && <Lock className="w-3 h-3 text-amber-400" />}
+                <span>💃 Golden Soulmates (50+)</span>
               </button>
             </div>
           </div>
@@ -3862,18 +4689,20 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
               >
                 <GlassCard className="p-6 sm:p-8 border border-purple-500/40 relative overflow-hidden space-y-6 text-center shadow-2xl bg-gradient-to-b from-[#1b1733] to-[#120f24]">
                   <div className="flex items-center justify-between flex-wrap gap-2">
-                    <span className="px-3 py-1 rounded-full bg-purple-500/20 text-purple-300 border border-purple-400/40 text-xs font-mono font-bold flex items-center gap-1">
+                    <span className="text-purple-300 text-xs font-mono font-bold flex items-center gap-1">
                       <span>{activeCard.icon}</span> {activeCard.category}
                     </span>
                     <div className="flex items-center gap-2">
                       {!isVipOrPass && (
-                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-mono font-bold">
-                          BASIC 5-SAMPLE LOOP
+                        <span className="text-amber-300 text-[10px] font-mono font-bold flex items-center gap-1">
+                          <Lock className="w-3 h-3" /> PAID SUBSCRIPTION REQUIRED
                         </span>
                       )}
-                      <span className="text-xs text-amber-300 font-mono font-bold">
-                        +{isVipOrPass ? 150 : 75} Synergy PTS {isVipOrPass ? '(2x VIP)' : ''}
-                      </span>
+                      {isVipOrPass && (
+                        <span className="text-xs text-amber-300 font-mono font-bold">
+                          {subProfile.tierLabel.split(' ')[0]} Endless Deck
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -3882,7 +4711,9 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                       Target: {activeCard.forWhom}
                     </span>
                     <p className="text-base sm:text-xl font-bold text-white leading-relaxed">
-                      &quot;{activeCard.cardPrompt}&quot;
+                      {isVipOrPass
+                        ? `"${activeCard.cardPrompt}"`
+                        : '"Subscribe with Google Pay ($1.00+) to draw & reveal zero-repeat Truth, Dare & Midnight Desire cards."'}
                     </p>
                   </div>
 
@@ -3895,20 +4726,11 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                       <ChevronLeft className="w-5 h-5" />
                     </button>
                     <button
-                      onClick={() => {
-                        if (isBasicLimitReached) {
-                          if (onOpenUpgradeModal) {
-                            onOpenUpgradeModal(
-                              'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Truth & Dare Spicy Cards Throughout via Google Pay ($0.99 / $5.99)!'
-                            );
-                          }
-                          return;
-                        }
-                        handleCompleteChallenge();
-                      }}
-                      className="px-6 py-3 rounded-2xl bg-gradient-to-r from-pink-500 to-purple-600 text-white font-extrabold text-xs sm:text-sm shadow-xl hover:scale-105 transition-all flex items-center gap-2 cursor-pointer"
+                      onClick={() => handleCompleteChallenge()}
+                      className="px-6 py-3 min-h-[44px] rounded-2xl bg-gradient-to-r from-pink-500 to-purple-600 text-white font-extrabold text-xs sm:text-sm shadow-xl hover:scale-105 transition-all flex items-center gap-2 cursor-pointer"
                     >
-                      <CheckCircle2 className="w-4 h-4" /> Completed (+{isVipOrPass ? 150 : 75} Pts)
+                      {!isVipOrPass ? <Lock className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+                      <span>{isVipOrPass ? 'Completed' : 'Subscribe to Play Cards ($1.00+)'}</span>
                     </button>
                     <button
                       onClick={handleNextCard}
@@ -3925,22 +4747,6 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                       <Shuffle className="w-5 h-5" />
                     </button>
                   </div>
-
-                  {!isVipOrPass && onOpenUpgradeModal && (
-                    <div className="pt-2 border-t border-white/10 flex items-center justify-between gap-2 text-[11px] font-mono">
-                      <span className="text-zinc-400">🔒 Want 6 Spicy Levels & Midnight Dares?</span>
-                      <button
-                        onClick={() =>
-                          onOpenUpgradeModal(
-                            'Unlock All Endless Spicy Truth & Dare Decks 24/7 via Google Pay ($0.99 / $5.99)!'
-                          )
-                        }
-                        className="text-amber-300 hover:text-amber-200 font-bold underline cursor-pointer"
-                      >
-                        Unlock VIP →
-                      </button>
-                    </div>
-                  )}
                 </GlassCard>
               </motion.div>
             </AnimatePresence>
@@ -3954,8 +4760,8 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
       {activeGameTab === 'social_viral' && (
         <div className="space-y-4 max-w-2xl mx-auto">
           {renderSubscriptionBanner(
-            'BASIC MODE (FREE): 5-Challenge Mild Viral Loop',
-            'All 6 Spicy Viral Tiers + AI Challenge Generator Unlocked 24/7 • 2x VIP Synergy Points'
+            'PAID SUBSCRIPTION REQUIRED FOR VIRAL QUESTS',
+            'All 6 Spicy Viral Tiers + AI Challenge Generator Unlocked 24/7 • Endless Zero-Repeat Loop'
           )}
 
           {renderBasicLimitGate()}
@@ -3983,7 +4789,7 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                     : 'bg-white/5 text-zinc-300 hover:text-white'
                 }`}
               >
-                <span>🖐️</span> Put A Finger Down ({isVipOrPass ? '10' : '5 Free'} Fingers)
+                <span>🖐️</span> Put A Finger Down ({isVipOrPass ? '10 Fingers Unlocked' : '🔒 Paid Plan'})
               </button>
             </div>
 
@@ -3999,11 +4805,6 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
               {!isVipOrPass && <Lock className="w-3 h-3 text-amber-400" />}
               <Sparkles className={`w-3.5 h-3.5 ${isGeneratingViral ? 'animate-spin' : ''}`} />
               <span>{isGeneratingViral ? 'Generating...' : '✨ Generate Tastier Challenge'}</span>
-              {!isVipOrPass && (
-                <span className="px-1.5 py-0.2 rounded-full bg-amber-400 text-black font-black text-[9px]">
-                  VIP
-                </span>
-              )}
             </button>
           </div>
 
@@ -4030,21 +4831,25 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                 <GlassCard className="p-6 sm:p-8 border border-pink-500/40 relative overflow-hidden space-y-6 shadow-2xl bg-gradient-to-b from-[#1f1224] via-[#160d1a] to-[#0d0710]">
                   {/* Card Header */}
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-4">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="px-3 py-1 rounded-full bg-pink-500/20 border border-pink-400/40 text-pink-300 font-mono text-xs font-bold flex items-center gap-1">
+                    <div className="flex items-center gap-2 flex-wrap text-xs font-mono">
+                      <span className="text-pink-300 font-bold flex items-center gap-1">
                         <Video className="w-3.5 h-3.5 text-pink-400" /> {activeViral.platform}
                       </span>
-                      <span className="px-2.5 py-1 rounded-full bg-amber-400/10 border border-amber-400/30 text-amber-300 font-mono text-[11px] font-bold">
+                      <span className="text-zinc-500" aria-hidden="true">·</span>
+                      <span className="text-amber-300 font-bold">
                         {activeViral.vibe}
                       </span>
                       {!isVipOrPass && (
-                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-mono font-bold">
-                          BASIC 5-SAMPLE LOOP
-                        </span>
+                        <>
+                          <span className="text-zinc-500" aria-hidden="true">·</span>
+                          <span className="text-amber-300 text-[10px] font-bold flex items-center gap-1">
+                            <Lock className="w-3 h-3" /> Subscription Required
+                          </span>
+                        </>
                       )}
                     </div>
 
-                    <span className="text-xs font-mono text-zinc-400">
+                    <span className="text-xs font-mono text-zinc-400 tabular-nums">
                       Challenge {(activeViralIndex % activeViralPool.length) + 1} of {activeViralPool.length}
                     </span>
                   </div>
@@ -4058,7 +4863,9 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                       {activeViral.title}
                     </h3>
                     <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed font-sans">
-                      {activeViral.setup}
+                      {isVipOrPass
+                        ? activeViral.setup
+                        : 'Subscribe via Google Pay ($1.00+) to unlock all trending viral TikTok & Reels challenges with zero repeats.'}
                     </p>
                   </div>
 
@@ -4071,7 +4878,7 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                       {activeViral.rules.map((rule, rIdx) => (
                         <li key={rIdx} className="flex items-start gap-2">
                           <span className="text-pink-400 font-mono font-bold">•</span>
-                          <span>{rule}</span>
+                          <span>{isVipOrPass ? rule : 'Included upon subscription activation.'}</span>
                         </li>
                       ))}
                     </ul>
@@ -4094,15 +4901,27 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                     </div>
 
                     <button
-                      onClick={playTrendingVibeBeat}
+                      onClick={() => {
+                        if (requiresPaidSubscription) {
+                          openSubscriptionPaywall('Viral Social Quests Audio');
+                          return;
+                        }
+                        playTrendingVibeBeat();
+                      }}
                       className={`px-3 py-1.5 rounded-xl font-mono text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
                         isPlayingVibeBeat
                           ? 'bg-pink-500 text-white animate-pulse'
                           : 'bg-white/10 text-white hover:bg-white/20'
                       }`}
                     >
-                      {isPlayingVibeBeat ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                      <span>{isPlayingVibeBeat ? 'Playing...' : 'Preview Vibe'}</span>
+                      {!isVipOrPass ? (
+                        <Lock className="w-3 h-3 text-amber-300" />
+                      ) : isPlayingVibeBeat ? (
+                        <Pause className="w-3 h-3" />
+                      ) : (
+                        <Play className="w-3 h-3" />
+                      )}
+                      <span>{isPlayingVibeBeat ? 'Playing...' : isVipOrPass ? 'Preview Vibe' : 'Unlock Audio'}</span>
                     </button>
                   </div>
 
@@ -4110,24 +4929,21 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                   <div className="space-y-2.5 pt-2 border-t border-white/10">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       <button
-                        onClick={() => {
-                          if (isBasicLimitReached) {
-                            if (onOpenUpgradeModal) {
-                              onOpenUpgradeModal(
-                                'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Viral & Spicy Challenges Throughout via Google Pay ($0.99 / $5.99)!'
-                              );
-                            }
-                            return;
-                          }
-                          handleCompleteChallenge();
-                        }}
-                        className="py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-black text-xs sm:text-sm shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                        onClick={() => handleCompleteChallenge()}
+                        className="py-3 min-h-[44px] px-4 rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-black text-xs sm:text-sm shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
                       >
-                        <PartyPopper className="w-4 h-4 fill-black" /> Complete Challenge (+{isVipOrPass ? 150 : 75} Pts)
+                        {!isVipOrPass ? <Lock className="w-4 h-4" /> : <PartyPopper className="w-4 h-4 fill-black" />}
+                        <span>
+                          {isVipOrPass ? 'Complete Challenge' : 'Subscribe to Play ($1.00+)'}
+                        </span>
                       </button>
 
                       <button
                         onClick={() => {
+                          if (requiresPaidSubscription) {
+                            openSubscriptionPaywall('Viral Social Quests');
+                            return;
+                          }
                           const text = `🔥 We just crushed the "${activeViral.title}" on Twogether! ${activeViral.hashtag}`;
                           if (navigator.clipboard) {
                             navigator.clipboard.writeText(text);
@@ -4135,7 +4951,7 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                           setViralToast('📸 Caption copied! Ready to post on Twogether Feed or Reels & Stories.');
                           playWinChime();
                         }}
-                        className="py-3 px-4 rounded-2xl bg-gradient-to-r from-pink-500 to-rose-600 text-white font-black text-xs sm:text-sm shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                        className="py-3 min-h-[44px] px-4 rounded-2xl bg-gradient-to-r from-pink-500 to-rose-600 text-white font-black text-xs sm:text-sm shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
                       >
                         <Share2 className="w-4 h-4" /> Post / Share to Feed
                       </button>
@@ -4145,12 +4961,8 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                     <div className="flex items-center justify-between gap-2 pt-2">
                       <button
                         onClick={() => {
-                          if (isBasicLimitReached) {
-                            if (onOpenUpgradeModal) {
-                              onOpenUpgradeModal(
-                                'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Viral Challenges Throughout via Google Pay ($0.99 / $5.99)!'
-                              );
-                            }
+                          if (requiresPaidSubscription) {
+                            openSubscriptionPaywall('Viral Social Quests');
                             return;
                           }
                           setActiveViralIndex((prev) => (prev > 0 ? prev - 1 : activeViralPool.length - 1));
@@ -4162,38 +4974,28 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
 
                       <button
                         onClick={() => {
-                          if (isBasicLimitReached) {
-                            if (onOpenUpgradeModal) {
-                              onOpenUpgradeModal(
-                                'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Viral Challenges Throughout via Google Pay ($0.99 / $5.99)!'
-                              );
-                            }
+                          if (requiresPaidSubscription) {
+                            openSubscriptionPaywall('Viral Social Quests');
                             return;
                           }
-                          const nextIdx = Math.floor(Math.random() * activeViralPool.length);
-                          setActiveViralIndex(nextIdx);
-                          playMechanicalTick(Math.random() * 80);
+                          advanceViralNonRepeating('random');
                         }}
                         className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-amber-300 text-xs font-mono font-bold flex items-center gap-1 cursor-pointer"
                       >
-                        <Shuffle className="w-3.5 h-3.5" /> Random Shuffle
+                        <Shuffle className="w-3.5 h-3.5" /> Unseen Shuffle
                       </button>
 
                       <button
                         onClick={() => {
-                          if (isBasicLimitReached) {
-                            if (onOpenUpgradeModal) {
-                              onOpenUpgradeModal(
-                                'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Viral Challenges Throughout via Google Pay ($0.99 / $5.99)!'
-                              );
-                            }
+                          if (requiresPaidSubscription) {
+                            openSubscriptionPaywall('Viral Social Quests');
                             return;
                           }
-                          setActiveViralIndex((prev) => (prev + 1) % activeViralPool.length);
+                          advanceViralNonRepeating('next');
                         }}
                         className="px-3.5 py-2 rounded-xl bg-pink-500 hover:bg-pink-600 text-white text-xs font-mono font-bold flex items-center gap-1 cursor-pointer"
                       >
-                        <span>Next</span> <ChevronRight className="w-4 h-4" />
+                        <span>Next Unseen</span> <ChevronRight className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
@@ -4207,8 +5009,8 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
             <GlassCard className="p-6 sm:p-8 border border-amber-400/40 text-center space-y-6 shadow-2xl bg-gradient-to-b from-[#21151e] via-[#150d18] to-[#0c0610]">
               {/* Header */}
               <div className="space-y-1">
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400/20 text-amber-300 border border-amber-400/30 text-xs font-mono font-bold">
-                  <span>🖐️</span> Viral Social Game • Put A Finger Down
+                <div className="inline-flex items-center gap-1.5 text-amber-300 text-xs font-mono font-bold">
+                  <span>🖐️</span> Viral Social Game · Put A Finger Down
                 </div>
                 <h3 className="text-xl sm:text-2xl font-black text-white">Couples Confession Edition</h3>
                 <p className="text-xs text-zinc-300 max-w-md mx-auto">
@@ -4220,7 +5022,7 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
               <div className="p-4 rounded-3xl bg-black/40 border border-white/10 space-y-3">
                 <div className="flex items-center justify-between text-xs font-mono">
                   <span className="text-zinc-400">Left Hand (Alex)</span>
-                  <span className="font-bold text-amber-300">
+                  <span className="font-bold text-amber-300 tabular-nums">
                     Fingers Standing: {fingersUp.filter(Boolean).length} / 10
                   </span>
                   <span className="text-zinc-400">Right Hand (Aria)</span>
@@ -4246,18 +5048,23 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                   ))}
                 </div>
                 <p className="text-[11px] text-zinc-400 font-mono">
-                  💡 Tap any finger above to raise or lower it!
+                  {isVipOrPass
+                    ? 'Tap any finger above to raise or lower it.'
+                    : 'Subscription required ($1.00+) to play interactive fingers & confession rounds.'}
                 </p>
               </div>
 
               {/* Active Viral Prompt */}
               <div className="p-5 rounded-2xl bg-gradient-to-r from-pink-500/10 via-purple-500/10 to-amber-500/10 border border-pink-400/30 text-center space-y-2">
-                <span className="text-[11px] font-mono uppercase text-pink-400 font-bold block">
-                  Question #{(fingerQuestionIdx % visibleFingerQuestions.length) + 1} of {visibleFingerQuestions.length}{' '}
-                  {!isVipOrPass ? '(Basic 5-Sample Loop)' : '(All 10 VIP Unlocked)'}:
+                <span className="text-[11px] font-mono uppercase text-pink-400 font-bold block tabular-nums">
+                  {isVipOrPass
+                    ? `Question #${(fingerQuestionIdx % visibleFingerQuestions.length) + 1} of ${visibleFingerQuestions.length} (All 10 VIP Unlocked):`
+                    : 'Paid Subscription Required:'}
                 </span>
                 <p className="text-base sm:text-lg font-bold text-white leading-relaxed">
-                  &quot;{visibleFingerQuestions[fingerQuestionIdx % visibleFingerQuestions.length]}&quot;
+                  {isVipOrPass
+                    ? `"${visibleFingerQuestions[fingerQuestionIdx % visibleFingerQuestions.length]}"`
+                    : '"Subscribe with Google Pay ($1.00+) to unlock all Put A Finger Down confession rounds."'}
                 </p>
               </div>
 
@@ -4284,26 +5091,31 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
                 <button
                   onClick={() => {
+                    if (requiresPaidSubscription) {
+                      openSubscriptionPaywall('Put A Finger Down');
+                      return;
+                    }
                     const firstUp = fingersUp.findIndex((f) => f);
                     if (firstUp !== -1) {
                       handleToggleFinger(firstUp);
                     }
                   }}
-                  className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-pink-500 text-white font-extrabold text-xs shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  className="w-full sm:w-auto px-6 py-2.5 min-h-[44px] rounded-xl bg-pink-500 text-white font-extrabold text-xs shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                 >
+                  {!isVipOrPass && <Lock className="w-3.5 h-3.5" />}
                   <span>Put 1 Finger Down ✊</span>
                 </button>
 
                 <button
                   onClick={handleNextFingerQuestion}
-                  className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-amber-400 text-black font-extrabold text-xs shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  className="w-full sm:w-auto px-6 py-2.5 min-h-[44px] rounded-xl bg-amber-400 text-black font-extrabold text-xs shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <span>Next Question</span> <ChevronRight className="w-4 h-4" />
                 </button>
 
                 <button
                   onClick={handleResetFingers}
-                  className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-white/10 text-zinc-300 hover:text-white font-mono text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                  className="w-full sm:w-auto px-4 py-2.5 min-h-[44px] rounded-xl bg-white/10 text-zinc-300 hover:text-white font-mono text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5" /> Reset (10 Up)
                 </button>
@@ -4311,20 +5123,15 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
 
               {/* Complete Reward */}
               <button
-                onClick={() => {
-                  if (isBasicLimitReached) {
-                    if (onOpenUpgradeModal) {
-                      onOpenUpgradeModal(
-                        'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Put A Finger Down Throughout via Google Pay ($0.99 / $5.99)!'
-                      );
-                    }
-                    return;
-                  }
-                  handleCompleteChallenge();
-                }}
-                className="w-full py-3 rounded-2xl bg-gradient-to-r from-emerald-400 to-cyan-400 text-black font-black text-xs sm:text-sm shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                onClick={() => handleCompleteChallenge()}
+                className="w-full py-3 min-h-[44px] rounded-2xl bg-gradient-to-r from-emerald-400 to-cyan-400 text-black font-black text-xs sm:text-sm shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
-                <PartyPopper className="w-4 h-4 fill-black" /> Complete Put A Finger Down (+{isVipOrPass ? 150 : 75} Synergy PTS)
+                {!isVipOrPass ? <Lock className="w-4 h-4" /> : <PartyPopper className="w-4 h-4 fill-black" />}
+                <span>
+                  {isVipOrPass
+                    ? 'Complete Put A Finger Down'
+                    : 'Subscribe ($1.00+) to Play Put A Finger Down'}
+                </span>
               </button>
             </GlassCard>
           )}
@@ -4334,8 +5141,8 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
       {activeGameTab === 'dice' && (
         <div className="space-y-4">
           {renderSubscriptionBanner(
-            'BASIC MODE (FREE): 5-Sample Mild Craving Dice Loop',
-            'All 6 Spicy Craving Dice Pools Unlocked 24/7 • No 2-Hour Cooldown • 2x Synergy Points'
+            'PAID SUBSCRIPTION REQUIRED FOR CRAVING DICE',
+            'All 6 Spicy Craving Dice Pools Unlocked 24/7 • No Cooldown • Zero-Repeat Rolls'
           )}
 
           {renderBasicLimitGate()}
@@ -4344,15 +5151,15 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
 
           <GlassCard className="p-6 sm:p-8 border border-amber-400/40 text-center space-y-6 max-w-xl mx-auto bg-gradient-to-b from-[#1c1825] to-[#120f1c]">
             <div>
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400/20 text-amber-300 border border-amber-400/30 text-xs font-mono font-bold mb-2">
-                <Dices className="w-4 h-4 text-amber-400" />{' '}
-                {isVipOrPass ? 'Endless Naughty Dice Generator (VIP)' : 'Basic Sample Romance Dice (Mild)'}
+              <div className="inline-flex items-center gap-1.5 text-amber-300 text-xs font-mono font-bold mb-2">
+                {isVipOrPass ? <Dices className="w-4 h-4 text-amber-400" /> : <Lock className="w-4 h-4 text-amber-400" />}
+                <span>{isVipOrPass ? 'Endless Naughty Dice Generator' : 'Craving Dice · Paid Subscription Only'}</span>
               </div>
               <h3 className="text-xl sm:text-2xl font-black text-white">Roll for Passion & Action</h3>
               <p className="text-xs text-zinc-300 max-w-md mx-auto">
                 {isVipOrPass
                   ? 'Roll the twin passion dice to generate hundreds of spicy, hot & extremely hot action + location pairings.'
-                  : 'Basic Free rolls gentle 5-sample affection pairings. Unlock VIP for Spicy, Hot & Extremely Hot Bedroom Dice!'}
+                  : 'Subscribe via Google Pay ($1.00+) to roll twin Craving Dice scaled to your chosen heat plan.'}
               </p>
             </div>
 
@@ -4365,9 +5172,11 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                 }`}
               >
                 <span className="text-[10px] font-mono uppercase text-pink-300 font-extrabold tracking-wider">
-                  🎲 Die 1: {isVipOrPass ? 'Sensual Action' : 'Mild Affection'}
+                  🎲 Die 1: Sensual Action
                 </span>
-                <span className="text-lg sm:text-xl font-black text-white font-sans">{diceAction}</span>
+                <span className="text-lg sm:text-xl font-black text-white font-sans">
+                  {isVipOrPass ? diceAction : '🔒 Paid Plan'}
+                </span>
               </div>
 
               {/* Die 2: Target Location */}
@@ -4377,52 +5186,47 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                 }`}
               >
                 <span className="text-[10px] font-mono uppercase text-amber-300 font-extrabold tracking-wider">
-                  🎯 Die 2: {isVipOrPass ? 'Intimate Location' : 'Sweet Spot'}
+                  🎯 Die 2: Intimate Location
                 </span>
-                <span className="text-lg sm:text-xl font-black text-white font-sans">{diceLocation}</span>
+                <span className="text-lg sm:text-xl font-black text-white font-sans">
+                  {isVipOrPass ? diceLocation : '🔒 Google Pay'}
+                </span>
               </div>
             </div>
 
             {/* Prompt Synthesis */}
             <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-xs sm:text-sm text-zinc-200">
-              Current Command: Deliver a <strong className="text-pink-400">{diceAction}</strong> directly on partner’s{' '}
-              <strong className="text-amber-400">{diceLocation}</strong>!
+              {isVipOrPass ? (
+                <>
+                  Current Command: Deliver a <strong className="text-pink-400">{diceAction}</strong> directly on partner’s{' '}
+                  <strong className="text-amber-400">{diceLocation}</strong>!
+                </>
+              ) : (
+                <span>Subscribe ($1.00+) to roll and reveal interactive twin Craving Dice commands.</span>
+              )}
             </div>
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
               <button
                 onClick={rollNaughtyDice}
                 disabled={isRollingDice}
-                className={`w-full sm:w-auto px-8 py-3 rounded-2xl font-black text-xs sm:text-sm shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                  isBasicLimitReached
-                    ? 'bg-amber-400 text-black'
-                    : 'bg-gradient-to-r from-amber-400 via-yellow-400 to-pink-500 text-black'
-                }`}
+                className="w-full sm:w-auto px-8 py-3 min-h-[44px] rounded-2xl font-black text-xs sm:text-sm shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400 via-yellow-400 to-pink-500 text-black"
               >
-                {isBasicLimitReached ? <Lock className="w-4 h-4" /> : <Dices className={`w-4 h-4 ${isRollingDice ? 'animate-spin' : ''}`} />}
+                {!isVipOrPass ? <Lock className="w-4 h-4" /> : <Dices className={`w-4 h-4 ${isRollingDice ? 'animate-spin' : ''}`} />}
                 <span>
-                  {isBasicLimitReached
-                    ? 'Daily Free Rolls Complete — Unlock VIP'
+                  {!isVipOrPass
+                    ? 'Subscribe to Roll Dice ($1.00+)'
                     : isRollingDice
                     ? 'Rolling Dice...'
                     : `Roll Craving Dice (Roll #${diceRollCount})`}
                 </span>
               </button>
               <button
-                onClick={() => {
-                  if (isBasicLimitReached) {
-                    if (onOpenUpgradeModal) {
-                      onOpenUpgradeModal(
-                        'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Spicy Craving Dice Throughout via Google Pay ($0.99 / $5.99)!'
-                      );
-                    }
-                    return;
-                  }
-                  handleCompleteChallenge();
-                }}
-                className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-bold text-xs hover:bg-emerald-500/30 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                onClick={() => handleCompleteChallenge()}
+                className="w-full sm:w-auto px-6 py-3 min-h-[44px] rounded-2xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-bold text-xs hover:bg-emerald-500/30 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
               >
-                <PartyPopper className="w-4 h-4" /> Complete (+{isVipOrPass ? 150 : 75} Pts)
+                {!isVipOrPass ? <Lock className="w-4 h-4" /> : <PartyPopper className="w-4 h-4" />}
+                <span>{isVipOrPass ? 'Complete' : 'Locked'}</span>
               </button>
             </div>
           </GlassCard>
@@ -4435,8 +5239,8 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
       {activeGameTab === 'quiz' && (
         <div className="space-y-4">
           {renderSubscriptionBanner(
-            'BASIC MODE (FREE): 5-Question Mild Compatibility Loop',
-            'All 6 Spicy Intimacy Quiz Levels Unlocked 24/7 • No 2-Hour Cooldown • 2x VIP Synergy Points'
+            'PAID SUBSCRIPTION REQUIRED FOR COMPATIBILITY QUIZ',
+            'All 6 Spicy Intimacy Quiz Levels Unlocked 24/7 • No Cooldown • Endless Rounds'
           )}
 
           {renderBasicLimitGate()}
@@ -4447,44 +5251,41 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div>
                 <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold tracking-widest block">
-                  {isVipOrPass ? 'Endless Couples Spicy Intimacy Quiz (VIP)' : 'Basic Sample Couples Compatibility Quiz'}
+                  {isVipOrPass ? 'Endless Couples Spicy Intimacy Quiz' : 'Couples Intimacy Quiz · Paid Plan Required'}
                 </span>
                 <h3 className="text-lg font-black text-white">Who Knows Me Best?</h3>
               </div>
               <div className="flex items-center gap-2">
                 {!isVipOrPass && (
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-mono font-bold">
-                    5-SAMPLE LOOP
+                  <span className="text-amber-300 text-[10px] font-mono font-bold flex items-center gap-1">
+                    <Lock className="w-3 h-3" /> Paid Plan
                   </span>
                 )}
-                <span className="text-xs font-mono text-zinc-400">
+                <span className="text-xs font-mono text-zinc-400 tabular-nums">
                   Round {(quizQuestionIndex % activeQuizPool.length) + 1} / {activeQuizPool.length}
                 </span>
               </div>
             </div>
 
             <h4 className="text-sm sm:text-base font-bold text-white">
-              {currentQuiz.q}
+              {isVipOrPass
+                ? currentQuiz.q
+                : 'Subscribe with Google Pay ($1.00+) to unlock all endless intimacy quiz questions.'}
             </h4>
 
             <div className="space-y-2">
               {currentQuiz.options.map((opt, oIdx) => {
-                const isSelected = quizSelectedAnswer === oIdx;
+                const isSelected = isVipOrPass && quizSelectedAnswer === oIdx;
                 return (
                   <button
                     key={oIdx}
                     onClick={() => {
-                      if (isBasicLimitReached) {
-                        if (onOpenUpgradeModal) {
-                          onOpenUpgradeModal(
-                            'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Spicy Quiz Rounds Throughout via Google Pay ($0.99 / $5.99)!'
-                          );
-                        }
+                      if (requiresPaidSubscription) {
+                        openSubscriptionPaywall('Who Knows Me Best Quiz');
                         return;
                       }
                       setQuizSelectedAnswer(oIdx);
                       playWinChime();
-                      setQuizScore((prev) => prev + 1);
                     }}
                     className={`w-full p-3 rounded-2xl border text-xs sm:text-sm font-semibold text-left transition-all flex items-center justify-between cursor-pointer ${
                       isSelected
@@ -4492,14 +5293,18 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                         : 'bg-white/5 border-white/10 text-zinc-300 hover:bg-white/10 hover:border-cyan-400/30'
                     }`}
                   >
-                    <span>{opt}</span>
-                    {isSelected && <CheckCircle2 className="w-4 h-4 text-cyan-400" />}
+                    <span>{isVipOrPass ? opt : `🔒 Answer Option ${oIdx + 1} — Subscribe to Unlock`}</span>
+                    {!isVipOrPass ? (
+                      <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    ) : (
+                      isSelected && <CheckCircle2 className="w-4 h-4 text-cyan-400" />
+                    )}
                   </button>
                 );
               })}
             </div>
 
-            {quizSelectedAnswer !== null && (
+            {isVipOrPass && quizSelectedAnswer !== null && (
               <div className="p-3 rounded-xl bg-cyan-500/10 border border-cyan-400/30 text-xs text-cyan-200 font-mono">
                 💡 Intimacy Insight: {currentQuiz.expl}
               </div>
@@ -4508,36 +5313,28 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
             <div className="flex items-center justify-between gap-2 pt-2 flex-wrap">
               {!isVipOrPass && onOpenUpgradeModal && (
                 <button
-                  onClick={() =>
-                    onOpenUpgradeModal(
-                      'Unlock Deep Spicy, Hot & Extremely Hot Compatibility Questions 24/7 via Google Pay ($0.99 / $5.99)!'
-                    )
-                  }
+                  onClick={() => openSubscriptionPaywall('Who Knows Me Best Quiz')}
                   className="text-[11px] font-mono text-amber-300 hover:text-amber-200 font-bold underline cursor-pointer"
                 >
-                  👑 Unlock Spicy VIP Questions
+                  👑 Subscribe ($1.00+) to Unlock Quiz
                 </button>
               )}
 
               <button
                 onClick={() => {
-                  if (isBasicLimitReached) {
-                    if (onOpenUpgradeModal) {
-                      onOpenUpgradeModal(
-                        'Your 5 Free Basic Plays / ~2h daily allowance is complete! Unlock Endless Spicy Quiz Questions Throughout via Google Pay ($0.99 / $5.99)!'
-                      );
-                    }
+                  if (requiresPaidSubscription) {
+                    openSubscriptionPaywall('Who Knows Me Best Quiz');
                     return;
                   }
                   if (quizSelectedAnswer !== null) {
                     handleCompleteChallenge();
                   }
-                  setQuizQuestionIndex((prev) => prev + 1);
-                  setQuizSelectedAnswer(null);
+                  advanceQuizNonRepeating();
                 }}
-                className="px-5 py-2.5 rounded-xl bg-cyan-400 text-black font-extrabold text-xs shadow-md hover:scale-105 transition-all flex items-center gap-1.5 cursor-pointer ml-auto"
+                className="px-5 py-2.5 min-h-[44px] rounded-xl bg-cyan-400 text-black font-extrabold text-xs shadow-md hover:scale-105 transition-all flex items-center gap-1.5 cursor-pointer ml-auto"
               >
-                <span>Next Intimate Question (+{isVipOrPass ? 150 : 75} Pts)</span>
+                {!isVipOrPass && <Lock className="w-3.5 h-3.5" />}
+                <span>{isVipOrPass ? 'Next Unseen Question' : 'Subscribe to Play ($1.00+)'}</span>
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
@@ -4857,7 +5654,7 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                 <span>
                   {isCheckingCustomDare
                     ? '🛡️ AI Guardian Reviewing Command...'
-                    : '🚀 Send Command Dare (+150 PTS Reward)'}
+                    : '🚀 Send Command Dare'}
                 </span>
               </button>
             </motion.div>
@@ -4881,8 +5678,8 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                 <div className="flex items-center gap-2.5">
                   <Crown className="w-6 h-6 text-amber-400" />
                   <div>
-                    <h3 className="text-lg font-black text-white">VIP Endless Intimacy Spectrum</h3>
-                    <p className="text-xs text-zinc-400 font-mono">Compare Free Basic Mode vs VIP Subscription</p>
+                    <h3 className="text-lg font-black text-white">Paid Subscription Spectrum</h3>
+                    <p className="text-xs text-zinc-400 font-mono">Compare Unsubscribed Lock vs Paid Plans ($1.00 – $99.50)</p>
                   </div>
                 </div>
                 <button
@@ -4895,27 +5692,26 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
 
               {/* Comparison Matrix */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Basic Card */}
+                {/* Free Unsubscribed Card */}
                 <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono font-bold text-emerald-300">🟢 Basic Free Mode</span>
-                    <span className="text-[10px] text-zinc-400 font-mono">Free Forever</span>
+                    <span className="text-xs font-mono font-bold text-zinc-300 flex items-center gap-1">
+                      <Lock className="w-3.5 h-3.5 text-amber-400" /> Unsubscribed Tier
+                    </span>
+                    <span className="text-[10px] text-rose-300 font-mono font-bold">Games Locked</span>
                   </div>
                   <ul className="space-y-1.5 text-xs text-zinc-300 font-sans">
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-emerald-400">✓</span> Mild & Sweet Romance prompts only
+                    <li className="flex items-start gap-1.5 text-rose-300">
+                      <span>✕</span> All Couples &amp; Singles games require a paid plan
                     </li>
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400">⏱</span> Fixed 5-prompt repeating sample cycle
+                    <li className="flex items-start gap-1.5 text-zinc-400">
+                      <span>✕</span> Wheel, Aviator Crash &amp; Cards locked
                     </li>
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400">🌙</span> Rests near 2 hours so next day brings more vybe
+                    <li className="flex items-start gap-1.5 text-zinc-400">
+                      <span>✕</span> Viral Quests, Craving Dice &amp; Quizzes locked
                     </li>
-                    <li className="flex items-start gap-1.5 text-zinc-500">
-                      <span>✕</span> Locked out of all 5 spicy & hot levels
-                    </li>
-                    <li className="flex items-start gap-1.5 text-zinc-500">
-                      <span>✕</span> Standard 1x Synergy points (+75 PTS)
+                    <li className="flex items-start gap-1.5 text-zinc-400">
+                      <span>✕</span> No custom dares or AI spicy generator
                     </li>
                   </ul>
                 </div>
@@ -4923,26 +5719,26 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                 {/* VIP Card */}
                 <div className="p-4 rounded-2xl bg-gradient-to-b from-amber-500/20 via-pink-500/20 to-purple-500/10 border-2 border-amber-400/60 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono font-bold text-amber-300">👑 VIP Subscription</span>
+                    <span className="text-xs font-mono font-bold text-amber-300">👑 Paid Subscription</span>
                     <span className="px-2 py-0.5 rounded-full bg-amber-400 text-black font-black text-[10px]">
-                      $0.99 Pass / $5.99 Mo
+                      $1.00 – $99.50
                     </span>
                   </div>
                   <ul className="space-y-1.5 text-xs text-white font-sans">
                     <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400 font-bold">✓</span> <strong>Endless Throughout 24/7</strong> (No 2-hour daily limits)
+                      <span className="text-amber-400 font-bold">✓</span> <strong>All 8 Games Unlocked Endless 24/7</strong> (Zero repeats)
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400 font-bold">✓</span> Unlocks <strong>Spicy 🌶️, More Spicy 🌶️🔥, Most Spicy 🌶️🌶️🔥, Hot 🔥, Extra Hot 🔥💋 & Extremely Hot 💥🫦</strong>
+                      <span className="text-amber-400 font-bold">✓</span> <strong>4×360° Aviator Wheel</strong> &amp; <strong>Heat Crash</strong>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400 font-bold">✓</span> <strong>⚡ AI Spicy Vybe Generator</strong> for endless spontaneous challenges
+                      <span className="text-amber-400 font-bold">✓</span> <strong>Truth &amp; Dare, Viral Quests, Dice &amp; Quizzes</strong>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400 font-bold">✓</span> <strong>✍️ Custom Partner Dare Box</strong>
+                      <span className="text-amber-400 font-bold">✓</span> <strong>⚡ AI Spicy Generator</strong> &amp; <strong>Custom Dares</strong>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400 font-bold">✓</span> <strong>2x Synergy Points (+150 PTS)</strong>
+                      <span className="text-amber-400 font-bold">✓</span> <strong>Up to 12.0x Aviator Heat Boost</strong> scaled by plan
                     </li>
                   </ul>
                 </div>
@@ -4976,13 +5772,13 @@ export const CouplesGamesHub: React.FC<CouplesGamesHubProps> = ({
                     onClick={() => {
                       setShowVipPreviewDrawer(false);
                       onOpenUpgradeModal(
-                        'Unlock Endless Spicy, More Spicy, Hot, Extra Hot & Extremely Hot Vybes Throughout via Google Pay ($0.99 / $5.99)!'
+                        'Unlock Endless Spicy, More Spicy, Hot, Extra Hot & Extremely Hot Vybes Throughout via Google Pay ($1.00 / $14.50)!'
                       );
                     }}
                     className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-pink-500 text-black font-mono font-black text-xs sm:text-sm shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Crown className="w-4 h-4 fill-black" />
-                    <span>Upgrade with Google Pay ($0.99 1-Day Pass or $5.99/mo) — Play Endless Throughout</span>
+                    <span>Upgrade with Google Pay ($1.00 1-Day Pass or $14.50/mo) — Play Endless Throughout</span>
                   </button>
                 </div>
               )}

@@ -59,6 +59,8 @@ interface NavigationProps {
   isAppOwner?: boolean;
   backendViewMode?: 'frontend' | 'owner_backend';
   onToggleBackendView?: () => void;
+  isMusicBarVisible?: boolean;
+  onToggleMusicBar?: () => void;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
@@ -88,6 +90,8 @@ export const Navigation: React.FC<NavigationProps> = ({
   isAppOwner = false,
   backendViewMode = 'frontend',
   onToggleBackendView,
+  isMusicBarVisible = true,
+  onToggleMusicBar,
 }) => {
   // Audio Channels State: Mute pop-ups vs selected background music
   const [isPopupMuted, setIsPopupMuted] = useState<boolean>(() =>
@@ -148,11 +152,12 @@ export const Navigation: React.FC<NavigationProps> = ({
             onClick={() => setActiveTab('home')}
             className="flex items-center gap-2 cursor-pointer group select-none shrink-0"
           >
-            <div className="relative w-8 h-8 rounded-full bg-gradient-to-tr from-pink-400 via-purple-400 to-cyan-400 p-0.5 shadow-lg shadow-pink-500/20 group-hover:scale-105 transition-transform flex items-center justify-center">
-              <div className="w-full h-full bg-[#0F0E17] rounded-full flex items-center justify-center">
-                <Sparkles className="w-4 h-4 text-cyan-400 animate-pulse" />
-              </div>
-            </div>
+            <img
+              src="/pwa-192x192.png"
+              alt="Twogether App Icon"
+              referrerPolicy="no-referrer"
+              className="w-8 h-8 rounded-xl shadow-lg shadow-pink-500/20 border border-white/15 group-hover:scale-105 transition-transform object-cover"
+            />
             <div className="flex items-center gap-1">
               <span className="text-xl font-extrabold tracking-tight text-white font-sans">
                 twogether
@@ -314,6 +319,25 @@ export const Navigation: React.FC<NavigationProps> = ({
                           className="w-full accent-pink-500 cursor-pointer"
                         />
                       </div>
+
+                      {onToggleMusicBar && (
+                        <button
+                          onClick={onToggleMusicBar}
+                          className="w-full py-1.5 px-2.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-[11px] font-mono font-bold text-zinc-200 hover:text-white transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          {isMusicBarVisible ? (
+                            <>
+                              <X className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Hide Floating Music Bar</span>
+                            </>
+                          ) : (
+                            <>
+                              <Music className="w-3.5 h-3.5 text-pink-400" />
+                              <span>Show Floating Music Bar</span>
+                            </>
+                          )}
+                        </button>
+                      )}
                     </div>
 
                     <div className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">

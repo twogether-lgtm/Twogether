@@ -140,7 +140,7 @@ export const VIPDashboardScreen: React.FC<VIPDashboardScreenProps> = ({
               ))}
             </div>
             <span className="text-[11px] font-mono font-bold text-amber-200">
-              {isVip ? 'VIP ACTIVE ($0.99/day, $2.49/wk, $5.99/mo)' : 'BASIC (FREE)'}
+              {isVip ? 'VIP ACTIVE ($1.00/day, $3.50/wk, $14.50/mo)' : 'BASIC (FREE)'}
             </span>
 
             <button
@@ -148,7 +148,7 @@ export const VIPDashboardScreen: React.FC<VIPDashboardScreenProps> = ({
               className="mt-1 w-full px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-500 text-black font-extrabold text-xs shadow-lg hover:scale-105 transition-all flex items-center justify-center gap-1.5"
             >
               <Crown className="w-3.5 h-3.5 fill-black" />
-              {isVip ? 'Manage VIP Membership' : 'Upgrade to VIP (From $0.99)'}
+              {isVip ? 'Manage VIP Membership' : 'Upgrade to VIP (From $1.00)'}
             </button>
           </div>
         </div>

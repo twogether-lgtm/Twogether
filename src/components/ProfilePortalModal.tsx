@@ -29,6 +29,8 @@ import { VerificationBadge } from './VerificationBadge';
 import { AmbientOnlineAvatar } from './AmbientOnlineAvatar';
 import { GpsDistanceBadge } from './GpsDistanceBadge';
 import { GpsLocationVerificationModal } from './GpsLocationVerificationModal';
+import { AchievementProfileStrip } from './AchievementBadges';
+import { useAchievements } from '../services/achievementService';
 
 interface ProfilePortalModalProps {
   profile: SoulProfile | null;
@@ -54,10 +56,14 @@ export const ProfilePortalModal: React.FC<ProfilePortalModalProps> = ({
   const [activeVideo, setActiveVideo] = useState<{ url: string; title: string } | null>(null);
   const [isLiked, setIsLiked] = useState(false);
   const [isGpsModalOpen, setIsGpsModalOpen] = useState(false);
+  const { earnedIds } = useAchievements();
 
   if (!isOpen || !profile) return null;
 
   const isVip = profile.tier === 'vip';
+  const profileBadgeIds = isCurrentUser
+    ? Array.from(new Set([...(profile.badges || []), ...earnedIds]))
+    : profile.badges || [];
 
   return (
     <>
@@ -135,6 +141,17 @@ export const ProfilePortalModal: React.FC<ProfilePortalModalProps> = ({
                 <p className="text-xs text-cyan-300 font-mono italic">
                   "{profile.tagline || 'Seeking soulful alignment'}"
                 </p>
+
+                {profileBadgeIds.length > 0 && (
+                  <div className="pt-1">
+                    <AchievementProfileStrip
+                      badgeIds={profileBadgeIds}
+                      maxVisible={4}
+                      compact={true}
+                      ownerName={profile.name}
+                    />
+                  </div>
+                )}
               </div>
             </div>
 
@@ -231,6 +248,22 @@ export const ProfilePortalModal: React.FC<ProfilePortalModalProps> = ({
         <div className="flex-1 overflow-y-auto p-6 space-y-6 text-left">
           {activeTab === 'about' && (
             <div className="space-y-5">
+              {/* Earned Achievement Badges Card */}
+              {profileBadgeIds.length > 0 && (
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 via-purple-900/20 to-cyan-500/10 border border-amber-400/30 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs font-mono font-bold text-amber-300 uppercase tracking-wide">
+                    <span>Earned Digital Badges</span>
+                    <span className="text-zinc-300">{profileBadgeIds.length} Badges</span>
+                  </div>
+                  <AchievementProfileStrip
+                    badgeIds={profileBadgeIds}
+                    maxVisible={8}
+                    compact={false}
+                    ownerName={profile.name}
+                  />
+                </div>
+              )}
+
               {/* Soulmate Aim Highlight Box */}
               <div className="p-4 rounded-2xl bg-gradient-to-r from-pink-500/15 via-purple-500/15 to-cyan-500/15 border border-pink-500/30 space-y-1.5 relative overflow-hidden">
                 <div className="flex items-center gap-2 text-xs font-mono font-bold text-pink-300 uppercase tracking-wide">

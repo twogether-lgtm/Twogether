@@ -32,11 +32,16 @@ import { appSoundService } from '../services/appSoundService';
 
 interface OpeningLoveSongPlayerProps {
   onOpenJamSession?: () => void;
+  isVisible?: boolean;
+  onDismiss?: () => void;
 }
 
 export const OpeningLoveSongPlayer: React.FC<OpeningLoveSongPlayerProps> = ({
   onOpenJamSession,
+  isVisible = true,
+  onDismiss,
 }) => {
+  const [localDismissed, setLocalDismissed] = useState<boolean>(false);
   const [currentSong, setCurrentSong] = useState<LoveSong>(TRENDING_LOVE_SONGS[0]);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [progress, setProgress] = useState<number>(0);
@@ -121,6 +126,19 @@ export const OpeningLoveSongPlayer: React.FC<OpeningLoveSongPlayerProps> = ({
     loveSongAudioService.setVolume(nextMuted ? 0 : 0.75);
   };
 
+  const handleRemoveBar = () => {
+    setShowPlaylist(false);
+    if (onDismiss) {
+      onDismiss();
+    } else {
+      setLocalDismissed(true);
+    }
+  };
+
+  if (!isVisible || (onDismiss === undefined && localDismissed)) {
+    return null;
+  }
+
   return (
     <aside
       aria-label="Worldwide Trending Love Songs Player"
@@ -129,6 +147,7 @@ export const OpeningLoveSongPlayer: React.FC<OpeningLoveSongPlayerProps> = ({
       <motion.div
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
+        exit={{ y: -16, opacity: 0 }}
         className="bg-[#141026]/95 backdrop-blur-2xl border-2 border-pink-500/40 rounded-3xl shadow-2xl shadow-pink-950/50 overflow-hidden text-left"
       >
         {/* Progress Bar Header */}
@@ -259,12 +278,23 @@ export const OpeningLoveSongPlayer: React.FC<OpeningLoveSongPlayerProps> = ({
               onClick={() => setIsMinimized(!isMinimized)}
               className="p-1 text-zinc-400 hover:text-white cursor-pointer"
               title={isMinimized ? 'Expand Player' : 'Collapse'}
+              aria-label={isMinimized ? 'Expand Music Bar' : 'Collapse Music Bar'}
             >
               {isMinimized ? (
                 <ChevronDown className="w-4 h-4" />
               ) : (
                 <ChevronUp className="w-4 h-4" />
               )}
+            </button>
+
+            {/* Remove / Dismiss Floating Music Bar */}
+            <button
+              onClick={handleRemoveBar}
+              className="p-1.5 rounded-lg bg-white/10 hover:bg-rose-500/25 border border-white/15 hover:border-rose-400/50 text-zinc-300 hover:text-rose-200 transition-all cursor-pointer"
+              title="Remove music bar (restore anytime from Audio menu)"
+              aria-label="Remove music bar"
+            >
+              <X className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>

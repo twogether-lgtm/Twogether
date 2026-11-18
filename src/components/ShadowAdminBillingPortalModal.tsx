@@ -96,8 +96,8 @@ export const ShadowAdminBillingPortalModal: React.FC<ShadowAdminBillingPortalMod
   const [isSaved, setIsSaved] = useState<boolean>(false);
 
   // Test Payment Form
-  const [testAmount, setTestAmount] = useState<number>(4.99);
-  const [testPlan, setTestPlan] = useState<string>('VIP 2-Weeks Subscription ($4.99)');
+  const [testAmount, setTestAmount] = useState<number>(7.0);
+  const [testPlan, setTestPlan] = useState<string>('VIP 14-Day Bi-Weekly Subscription ($7.00)');
   const [isSimulatingPayment, setIsSimulatingPayment] = useState<boolean>(false);
   const [testSuccessMessage, setTestSuccessMessage] = useState<string | null>(null);
 
@@ -406,27 +406,29 @@ export const ShadowAdminBillingPortalModal: React.FC<ShadowAdminBillingPortalMod
                     value={testPlan}
                     onChange={(e) => {
                       setTestPlan(e.target.value);
-                      if (e.target.value.includes('Weekly ($2.49)')) setTestAmount(2.49);
-                      else if (e.target.value.includes('2-Weeks')) setTestAmount(3.99);
-                      else if (e.target.value.includes('Monthly ($5.99)')) setTestAmount(5.99);
-                      else if (e.target.value.includes('Yearly')) setTestAmount(29.99);
-                      else if (e.target.value.includes('HD Video Chat')) setTestAmount(2.99);
-                      else if (e.target.value.includes('Voice Chat')) setTestAmount(1.99);
-                      else if (e.target.value.includes('Single Wallpaper')) setTestAmount(0.99);
-                      else if (e.target.value.includes('All Wallpapers')) setTestAmount(2.49);
+                      if (e.target.value.includes('1-Day')) setTestAmount(1.0);
+                      else if (e.target.value.includes('7-Day Weekly')) setTestAmount(3.5);
+                      else if (e.target.value.includes('14-Day')) setTestAmount(7.0);
+                      else if (e.target.value.includes('30-Day Monthly')) setTestAmount(14.5);
+                      else if (e.target.value.includes('Yearly')) setTestAmount(99.5);
+                      else if (e.target.value.includes('HD Video Chat')) setTestAmount(1.99);
+                      else if (e.target.value.includes('Voice Chat')) setTestAmount(1.49);
+                      else if (e.target.value.includes('Single Wallpaper')) setTestAmount(0.79);
+                      else if (e.target.value.includes('All Wallpapers')) setTestAmount(1.99);
                       else if (e.target.value.includes('15 Gifts Pack')) setTestAmount(0.99);
                       else setTestAmount(10.00);
                     }}
                     className="w-full sm:w-1/2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-xs font-mono focus:outline-none"
                   >
-                    <option value="VIP Weekly Pass ($2.49)" className="bg-zinc-900">VIP Weekly Pass ($2.49)</option>
-                    <option value="VIP 2-Weeks Subscription ($3.99)" className="bg-zinc-900">VIP 2-Weeks Subscription ($3.99)</option>
-                    <option value="VIP Monthly Subscription ($5.99)" className="bg-zinc-900">VIP Monthly Subscription ($5.99)</option>
-                    <option value="VIP Yearly Subscription ($29.99)" className="bg-zinc-900">VIP Yearly Subscription ($29.99)</option>
-                    <option value="HD Video Chat 7-Day Pass ($2.99)" className="bg-zinc-900">HD Video Chat 7-Day Pass ($2.99)</option>
-                    <option value="Voice Chat 7-Day Pass ($1.99)" className="bg-zinc-900">Voice Chat 7-Day Pass ($1.99)</option>
-                    <option value="Single Wallpaper Theme ($0.99)" className="bg-zinc-900">Single Wallpaper Theme ($0.99)</option>
-                    <option value="All Wallpapers Lifetime Pass ($2.49)" className="bg-zinc-900">All Wallpapers Lifetime Pass ($2.49)</option>
+                    <option value="VIP 1-Day Pass ($1.00)" className="bg-zinc-900">VIP 1-Day Pass ($1.00)</option>
+                    <option value="VIP 7-Day Weekly Pass ($3.50)" className="bg-zinc-900">VIP 7-Day Weekly Pass ($3.50)</option>
+                    <option value="VIP 14-Day Bi-Weekly Subscription ($7.00)" className="bg-zinc-900">VIP 14-Day Bi-Weekly Subscription ($7.00)</option>
+                    <option value="VIP 30-Day Monthly Subscription ($14.50)" className="bg-zinc-900">VIP 30-Day Monthly Subscription ($14.50)</option>
+                    <option value="VIP Yearly Subscription ($99.50)" className="bg-zinc-900">VIP Yearly Subscription ($99.50)</option>
+                    <option value="HD Video Chat 7-Day Pass ($1.99)" className="bg-zinc-900">HD Video Chat 7-Day Pass ($1.99)</option>
+                    <option value="Voice Chat 7-Day Pass ($1.49)" className="bg-zinc-900">Voice Chat 7-Day Pass ($1.49)</option>
+                    <option value="Single Wallpaper Theme ($0.79)" className="bg-zinc-900">Single Wallpaper Theme ($0.79)</option>
+                    <option value="All Wallpapers Lifetime Pass ($1.99)" className="bg-zinc-900">All Wallpapers Lifetime Pass ($1.99)</option>
                     <option value="15 Gifts Pack ($0.99)" className="bg-zinc-900">15 Gifts Pack ($0.99)</option>
                     <option value="Custom Soulmate Tip ($10.00)" className="bg-zinc-900">Custom Soulmate Tip ($10.00)</option>
                   </select>
@@ -569,7 +571,7 @@ export const ShadowAdminBillingPortalModal: React.FC<ShadowAdminBillingPortalMod
                     <ShieldCheck className="w-4 h-4 text-amber-400" /> Automated Payout Routing Active
                   </div>
                   <p className="text-[11px] text-zinc-400">
-                    When users pay for VIP subscriptions ($4.99/2wks, $9.99/mo or $39.99/yr), funds are automatically logged in your database ledger and routed to your connected Google Billing / Merchant Account (<span className="text-white font-bold">{payoutEmail}</span>).
+                    When users pay for VIP subscriptions ($1.00/day, $3.50/wk, $7.00/14d, $14.50/mo, or $99.50/yr), funds are automatically logged in your database ledger and routed to your connected Google Billing / Merchant Account (<span className="text-white font-bold">{payoutEmail}</span>).
                   </p>
                 </div>
 

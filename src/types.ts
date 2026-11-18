@@ -77,6 +77,46 @@ export interface SocialLinks {
   website?: string;
 }
 
+export type AchievementBadgeId =
+  | 'jam_legend'
+  | 'vr_lounger'
+  | 'arcade_ace'
+  | 'soul_spark'
+  | 'reel_creator'
+  | 'verified_soul'
+  | 'generous_heart'
+  | 'vip_luminary';
+
+export type AchievementRarity = 'Core' | 'Rare' | 'Epic' | 'Legendary';
+
+export interface AchievementStats {
+  jamsPlayed: number;
+  vrActions: number;
+  gamesCompleted: number;
+  messagesSent: number;
+  reelsEngaged: number;
+  giftsShared: number;
+  isVerified: boolean;
+  isVip: boolean;
+}
+
+export interface AchievementBadgeDefinition {
+  id: AchievementBadgeId;
+  title: string;
+  tagline: string;
+  milestoneHint: string;
+  category: 'music' | 'vr' | 'games' | 'social' | 'trust';
+  rarity: AchievementRarity;
+  targetCount: number;
+  statKey: keyof AchievementStats;
+  unitLabel: string;
+}
+
+export interface EarnedBadgeRecord {
+  badgeId: AchievementBadgeId;
+  unlockedAt: string;
+}
+
 export interface SoulProfile {
   id: string;
   name: string;
@@ -89,6 +129,7 @@ export interface SoulProfile {
   matchScore: number;
   isSoulVerified: boolean;
   tier?: SubscriptionTier; // 'basic' or 'vip'
+  badges?: AchievementBadgeId[];
   soulmateAim?: string; // Goal on app
   workArea?: string; // Occupation/profession
   hobbies?: string[];
@@ -221,6 +262,29 @@ export interface VRLoungePreferences {
   falloffCurve: 'logarithmic' | 'linear';
 }
 
+export type ArcadeGameId =
+  | 'wheel'
+  | 'aviator_crash'
+  | 'cards'
+  | 'social_viral'
+  | 'dice'
+  | 'quiz'
+  | 'singles_quiz'
+  | 'singles_cards';
+
+export type GamePlanDurationId = 'daily' | 'weekly' | 'two_weeks' | 'monthly' | 'yearly';
+
+export interface GameUnlockEntry {
+  gameId: ArcadeGameId;
+  planId: GamePlanDurationId;
+  planName: string;
+  durationLabel: string;
+  usdAmount: number;
+  expiresAtMs: number;
+  googleOrderId: string;
+  unlockedAt: string;
+}
+
 export interface ActiveSubscriptionRecord {
   planId: string;
   planName: string;
@@ -234,6 +298,8 @@ export interface ActiveSubscriptionRecord {
   expiresAtMs: number;
   durationLabel: string;
   paymentMethod: string;
+  scope?: 'all' | 'games_partial';
+  unlockedGameIds?: ArcadeGameId[];
 }
 
 export type SafetyViolationCategory =

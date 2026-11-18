@@ -7,9 +7,9 @@ interface OpeningIntroModalProps {
   onClose: () => void;
 }
 
-// Built-in cinematic image assets generated for Twogether
-const INTRO_SCENE_1_IMG = '/src/assets/images/twogether_opening_cinematic_1790850368762.jpg';
-const INTRO_SCENE_2_IMG = '/src/assets/images/twogether_soul_resonance_1790850382927.jpg';
+// Built-in cinematic image assets imported so Vite production builds bundle them cleanly
+import INTRO_SCENE_1_IMG from '../assets/images/twogether_opening_cinematic_1790850368762.jpg';
+import INTRO_SCENE_2_IMG from '../assets/images/twogether_soul_resonance_1790850382927.jpg';
 
 export const OpeningIntroModal: React.FC<OpeningIntroModalProps> = ({
   isOpen,
